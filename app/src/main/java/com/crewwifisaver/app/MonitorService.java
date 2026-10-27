@@ -9,12 +9,49 @@ import java.io.*;
 import java.util.Locale;
 
 public class MonitorService extends Service {
+    private ScreenLockReceiver screenReceiver;
+    private ScreenLockTimer screenTimer;
+
+    private void setupScreenMonitoring() {
+        screenTimer = new ScreenLockTimer(() ->
+            report("unknown", "Screen-lock timer expired (test only)", 0)
+        );
+
+        screenReceiver = new ScreenLockReceiver(
+            new ScreenLockReceiver.Listener() {
+                @Override
+                public void onScreenOff() {
+                    int seconds = getSharedPreferences(
+                        "prefs", MODE_PRIVATE
+                    ).getInt("lock_seconds", 30);
+
+                    screenTimer.start(seconds);
+                    report("monitoring",
+                        "Screen off - countdown started", 0);
+                }
+
+                @Override
+                public void onScreenOn() {
+                    screenTimer.cancel();
+                    report("monitoring",
+                        "Screen on - countdown cancelled", 0);
+                }
+            }
+        );
+
+        android.content.IntentFilter filter =
+            new android.content.IntentFilter();
+        filter.addAction(Intent.ACTION_SCREEN_OFF);
+        filter.addAction(Intent.ACTION_SCREEN_ON);
+        registerReceiver(screenReceiver, filter);
+    }
+
  public static final String CHANNEL="crew_monitor", ACTION_STOP="com.crewwifisaver.app.STOP", ACTION_LOGOUT="com.crewwifisaver.app.LOGOUT";
  private final Handler handler=new Handler(Looper.getMainLooper());
  private long previousBytes=-1, previousTime=-1, idleStart=-1;
  private boolean busy=false, logoutAttempted=false;
  private final Runnable tick=new Runnable(){public void run(){sample();handler.postDelayed(this,10000);}};
- public void onCreate(){super.onCreate();NotificationChannel ch=new NotificationChannel(CHANNEL,"Crew Wi-Fi monitoring",NotificationManager.IMPORTANCE_LOW);getSystemService(NotificationManager.class).createNotificationChannel(ch);startForeground(12,notification("Starting monitoring"));handler.post(tick);}
+ public void onCreate(){super.onCreate();NotificationChannel ch=new NotificationChannel(CHANNEL,"Crew Wi-Fi monitoring",NotificationManager.IMPORTANCE_LOW);getSystemService(NotificationManager.class).createNotificationChannel(ch);startForeground(12,notification("Starting monitoring"));setupScreenMonitoring();handler.post(tick);}
  public int onStartCommand(Intent intent,int flags,int startId){if(intent!=null && ACTION_STOP.equals(intent.getAction())){stopSelf();return START_NOT_STICKY;}if(intent!=null && ACTION_LOGOUT.equals(intent.getAction()))logout();return START_STICKY;}
  private Notification notification(String detail){Intent open=new Intent(this,MainActivity.class);PendingIntent pi=PendingIntent.getActivity(this,1,open,PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);Intent out=new Intent(this,MonitorService.class).setAction(ACTION_LOGOUT);PendingIntent lo=PendingIntent.getService(this,2,out,PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);return new Notification.Builder(this,CHANNEL).setSmallIcon(android.R.drawable.stat_sys_download_done).setContentTitle("Crew WiFi Saver").setContentText(detail).setContentIntent(pi).addAction(android.R.drawable.ic_menu_close_clear_cancel,"Log out now",lo).setOngoing(true).build();}
  private void report(String state,String detail,double rate){getSharedPreferences("prefs",MODE_PRIVATE).edit().putString("state",state).putString("detail",detail).putFloat("rate",(float)rate).apply();getSystemService(NotificationManager.class).notify(12,notification(detail));sendBroadcast(new Intent("com.crewwifisaver.app.UPDATE").setPackage(getPackageName()));}
@@ -40,5 +77,5 @@ public class MonitorService extends Service {
             "Could not open logout page: " + e.getMessage(), 0);
     }
 }
-public void onDestroy(){handler.removeCallbacks(tick);super.onDestroy();}public IBinder onBind(Intent i){return null;}
+public void onDestroy(){handler.removeCallbacks(tick);if(screenTimer!=null)screenTimer.cancel();if(screenReceiver!=null)unregisterReceiver(screenReceiver);super.onDestroy();}public IBinder onBind(Intent i){return null;}
 }
