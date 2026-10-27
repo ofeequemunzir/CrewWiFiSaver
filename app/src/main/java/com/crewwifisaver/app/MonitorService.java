@@ -25,6 +25,20 @@ public class MonitorService extends Service {
  long elapsed=idleStart<0?0:now-idleStart;long remain=Math.max(0,mins*60000L-elapsed);String detail=String.format(Locale.US,"%.1f KB/min total · idle %d:%02d remaining",rate,remain/60000,(remain/1000)%60);
  if(!enabled){idleStart=-1;detail="Automatic logout paused · "+String.format(Locale.US,"%.1f KB/min total",rate);}report("monitoring",detail,rate);
  if(enabled&&idleStart>=0&&elapsed>=mins*60000L&&!logoutAttempted){logoutAttempted=true;logout();}}
- public void logout(){if(busy)return;Network n=wifi();if(n==null){report("unknown","Cannot log out: ship Wi-Fi unavailable",0);return;}busy=true;report("logging_out","Requesting logout.com over Wi-Fi",0);new Thread(()->{String result="";try{HttpURLConnection conn=(HttpURLConnection)n.openConnection(new URL("http://logout.com/"));conn.setConnectTimeout(9000);conn.setReadTimeout(9000);conn.setInstanceFollowRedirects(true);conn.setUseCaches(false);int code=conn.getResponseCode();result="Logout request returned HTTP "+code+"; session unverified";conn.disconnect();}catch(Exception e){result="Logout request failed; session unverified";}final String message=result;handler.post(()->{busy=false;idleStart=-1;report("unknown",message,0);});}).start();}
- public void onDestroy(){handler.removeCallbacks(tick);super.onDestroy();}public IBinder onBind(Intent i){return null;}
+ public void logout(){
+    Intent intent = new Intent(
+        Intent.ACTION_VIEW,
+        Uri.parse("http://logout.com/")
+    );
+    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+    try {
+        startActivity(intent);
+        report("unknown",
+            "Logout page opened. Verify internet is disconnected.", 0);
+    } catch (Exception e) {
+        report("unknown",
+            "Could not open logout page: " + e.getMessage(), 0);
+    }
+}
+public void onDestroy(){handler.removeCallbacks(tick);super.onDestroy();}public IBinder onBind(Intent i){return null;}
 }
