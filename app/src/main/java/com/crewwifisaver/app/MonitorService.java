@@ -14,7 +14,7 @@ public class MonitorService extends Service {
 
     private void setupScreenMonitoring() {
         screenTimer = new ScreenLockTimer(() ->
-            report("unknown", "Screen-lock timer expired (test only)", 0)
+            logout()
         );
 
         screenReceiver = new ScreenLockReceiver(
