@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
+        <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+
     <application
         android:label="Crew WiFi Saver"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
@@ -29,5 +31,6 @@
                 android:value="User-enabled crew Wi-Fi session monitoring"/>
         </service>
 
+            <receiver android:name=".LogoutAlarmReceiver" android:exported="false"/>
     </application>
 </manifest>
