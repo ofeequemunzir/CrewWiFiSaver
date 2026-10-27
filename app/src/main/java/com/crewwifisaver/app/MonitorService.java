@@ -63,19 +63,36 @@ public class MonitorService extends Service {
  if(!enabled){idleStart=-1;detail="Automatic logout paused · "+String.format(Locale.US,"%.1f KB/min total",rate);}report("monitoring",detail,rate);
  if(enabled&&idleStart>=0&&elapsed>=mins*60000L&&!logoutAttempted){logoutAttempted=true;logout();}}
  public void logout(){
-    Intent intent = new Intent(
-        Intent.ACTION_VIEW,
-        Uri.parse("http://logout.com/")
-    );
-    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-    try {
-        startActivity(intent);
-        report("unknown",
-            "Logout page opened. Verify internet is disconnected.", 0);
-    } catch (Exception e) {
-        report("unknown",
-            "Could not open logout page: " + e.getMessage(), 0);
-    }
+    if (logoutAttempted) return;
+    logoutAttempted = true;
+    report("unknown", "Sending background logout request...", 0);
+
+    new Thread(() -> {
+        java.net.HttpURLConnection conn = null;
+        try {
+            java.net.URL url =
+                new java.net.URL("http://logout.com/");
+            conn = (java.net.HttpURLConnection)
+                url.openConnection();
+            conn.setRequestMethod("HEAD");
+            conn.setInstanceFollowRedirects(true);
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
+            conn.setUseCaches(false);
+
+            int code = conn.getResponseCode();
+            report("unknown",
+                "Logout HTTP " + code +
+                " - verify paid session ended", 0);
+        } catch (Exception e) {
+            report("unknown",
+                "Logout request failed: " +
+                e.getMessage(), 0);
+        } finally {
+            if (conn != null) conn.disconnect();
+            logoutAttempted = false;
+        }
+    }).start();
 }
 public void onDestroy(){handler.removeCallbacks(tick);if(screenTimer!=null)screenTimer.cancel();if(screenReceiver!=null)unregisterReceiver(screenReceiver);super.onDestroy();}public IBinder onBind(Intent i){return null;}
 }
