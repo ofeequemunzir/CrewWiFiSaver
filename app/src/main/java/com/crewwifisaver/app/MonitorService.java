@@ -25,7 +25,12 @@ public class MonitorService extends Service {
                         "prefs", MODE_PRIVATE
                     ).getInt("lock_seconds", 30);
 
-                    LogoutAlarm.schedule(MonitorService.this, seconds);
+                    if (getSharedPreferences("prefs", MODE_PRIVATE)
+        .getBoolean("auto", true)) {
+    LogoutAlarm.schedule(MonitorService.this, seconds);
+} else {
+    LogoutAlarm.cancel(MonitorService.this);
+}
                     report("monitoring",
                         "Screen off - countdown started", 0);
                 }
@@ -57,7 +62,7 @@ if(intent!=null && "com.crewwifisaver.app.AUTO_LOGOUT".equals(intent.getAction()
  private Notification notification(String detail){Intent open=new Intent(this,MainActivity.class);PendingIntent pi=PendingIntent.getActivity(this,1,open,PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);Intent out=new Intent(this,MonitorService.class).setAction(ACTION_LOGOUT);PendingIntent lo=PendingIntent.getService(this,2,out,PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);return new Notification.Builder(this,CHANNEL).setSmallIcon(android.R.drawable.stat_sys_download_done).setContentTitle("Crew WiFi Saver").setContentText(detail).setContentIntent(pi).addAction(android.R.drawable.ic_menu_close_clear_cancel,"Log out now",lo).setOngoing(true).build();}
  private void report(String state,String detail,double rate){getSharedPreferences("prefs",MODE_PRIVATE).edit().putString("state",state).putString("detail",detail).putFloat("rate",(float)rate).apply();getSystemService(NotificationManager.class).notify(12,notification(detail));sendBroadcast(new Intent("com.crewwifisaver.app.UPDATE").setPackage(getPackageName()));}
  private Network wifi(){ConnectivityManager cm=getSystemService(ConnectivityManager.class);for(Network n:cm.getAllNetworks()){NetworkCapabilities c=cm.getNetworkCapabilities(n);if(c!=null&&c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)&&c.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET))return n;}return null;}
- private void sample(){Network network=wifi();if(network==null){idleStart=-1;previousBytes=-1;report("paused","Wi-Fi unavailable; monitoring paused",0);return;}
+ private void sample(){return;} private void oldTrafficSample(){Network network=wifi();if(network==null){idleStart=-1;previousBytes=-1;report("paused","Wi-Fi unavailable; monitoring paused",0);return;}
  long now=SystemClock.elapsedRealtime(),rx=TrafficStats.getTotalRxBytes(),tx=TrafficStats.getTotalTxBytes();if(rx<0||tx<0){report("unknown","Device traffic counters unavailable",0);return;}long bytes=rx+tx;double rate=0;if(previousBytes>=0&&now>previousTime){rate=Math.max(0,bytes-previousBytes)*60000.0/1024/(now-previousTime);}else{previousBytes=bytes;previousTime=now;report("monitoring","Sampling total device traffic (approximate)",0);return;}previousBytes=bytes;previousTime=now;
  android.content.SharedPreferences p=getSharedPreferences("prefs",MODE_PRIVATE);int threshold=p.getInt("traffic",50),mins=p.getInt("minutes",15);boolean enabled=p.getBoolean("auto",true);if(rate>=threshold){idleStart=-1;logoutAttempted=false;}else if(idleStart<0)idleStart=now;
  long elapsed=idleStart<0?0:now-idleStart;long remain=Math.max(0,mins*60000L-elapsed);String detail=String.format(Locale.US,"%.1f KB/min total · idle %d:%02d remaining",rate,remain/60000,(remain/1000)%60);

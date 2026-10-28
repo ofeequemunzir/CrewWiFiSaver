@@ -20,6 +20,16 @@ public class LogoutAlarmReceiver extends BroadcastReceiver {
             context.startForegroundService(service);
         } catch (Exception e) {
             android.util.Log.e("CrewWiFiSaver", "Alarm could not start service", e);
+context.getSharedPreferences("prefs", Context.MODE_PRIVATE)
+    .edit()
+    .putString("state", "unknown")
+    .putString("detail", "Automatic logout blocked: " + e.getMessage())
+    .apply();
+context.getSharedPreferences("prefs", Context.MODE_PRIVATE)
+    .edit()
+    .putString("state", "unknown")
+    .putString("detail", "Automatic logout blocked: " + e.getMessage())
+    .apply();
         }
     }
 }

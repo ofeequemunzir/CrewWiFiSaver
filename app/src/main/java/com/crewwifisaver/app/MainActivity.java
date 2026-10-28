@@ -12,14 +12,93 @@ public class MainActivity extends Activity {
  Button start=new Button(this);start.setText("START BACKGROUND MONITORING");start.setOnClickListener(v->{startMonitor(null);});root.addView(start);
  Button stop=new Button(this);stop.setText("STOP MONITORING");stop.setOnClickListener(v->{stopService(new Intent(this,MonitorService.class));state.setText("Monitoring stopped");});root.addView(stop);
  root.addView(text("Automatic logout",19));autoSwitch=new Switch(this);autoSwitch.setText("Enable inactivity logout");autoSwitch.setChecked(p.getBoolean("auto",true));autoSwitch.setOnCheckedChangeListener((v,c)->p.edit().putBoolean("auto",c).apply());root.addView(autoSwitch);
- minuteLabel=text("",17);root.addView(minuteLabel);minuteBar=new SeekBar(this);minuteBar.setMax(11);minuteBar.setProgress((p.getInt("minutes",15)-5)/5);root.addView(minuteBar);minuteBar.setOnSeekBarChangeListener(listener(()->{int val=5+minuteBar.getProgress()*5;minuteLabel.setText("Inactivity: "+val+" minutes");p.edit().putInt("minutes",val).apply();}));minuteLabel.setText("Inactivity: "+(5+minuteBar.getProgress()*5)+" minutes");
- trafficLabel=text("",17);root.addView(trafficLabel);trafficBar=new SeekBar(this);trafficBar.setMax(19);trafficBar.setProgress((p.getInt("traffic",50)-10)/10);root.addView(trafficBar);trafficBar.setOnSeekBarChangeListener(listener(()->{int val=10+trafficBar.getProgress()*10;trafficLabel.setText("Traffic threshold: "+val+" KB/min");p.edit().putInt("traffic",val).apply();}));trafficLabel.setText("Traffic threshold: "+(10+trafficBar.getProgress()*10)+" KB/min");
- Button wifi=new Button(this);wifi.setText("Open Wi-Fi settings");wifi.setOnClickListener(v->startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS)));root.addView(wifi);
+
+root.addView(text("Screen-off logout delay", 17));
+
+final String[] labels = {
+    "10 seconds",
+    "30 seconds",
+    "1 minute",
+    "2 minutes",
+    "5 minutes"
+};
+final int[] seconds = {10, 30, 60, 120, 300};
+
+android.widget.Spinner timer =
+    new android.widget.Spinner(this);
+
+android.widget.ArrayAdapter<String> adapter =
+    new android.widget.ArrayAdapter<>(
+        this,
+        android.R.layout.simple_spinner_item,
+        labels
+    );
+
+adapter.setDropDownViewResource(
+    android.R.layout.simple_spinner_dropdown_item
+);
+
+timer.setAdapter(adapter);
+
+int saved = p.getInt("lock_seconds", 30);
+int selected = 1;
+
+for (int i = 0; i < seconds.length; i++) {
+    if (seconds[i] == saved) selected = i;
+}
+
+timer.setSelection(selected);
+
+timer.setOnItemSelectedListener(
+    new android.widget.AdapterView.OnItemSelectedListener() {
+        public void onItemSelected(
+            android.widget.AdapterView<?> parent,
+            android.view.View view,
+            int position,
+            long id
+        ) {
+            p.edit().putInt(
+                "lock_seconds",
+                seconds[position]
+            ).apply();
+        }
+
+        public void onNothingSelected(
+            android.widget.AdapterView<?> parent
+        ) {}
+    }
+);
+
+root.addView(timer);
+Button wifi=new Button(this);wifi.setText("Open Wi-Fi settings");wifi.setOnClickListener(v->startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS)));root.addView(wifi);
  root.addView(text("BETA SAFETY NOTE: Traffic is measured across all device interfaces, not Wi-Fi alone. Free WhatsApp traffic may continue after paid logout. A logout request or failed internet check does NOT verify that paid minutes stopped. Test carefully before relying on automatic logout.",13));setContentView(scroll);
  if(Build.VERSION.SDK_INT>=33&&checkSelfPermission("android.permission.POST_NOTIFICATIONS")!=getPackageManager().PERMISSION_GRANTED)requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"},5);
  }
  private SeekBar.OnSeekBarChangeListener listener(Runnable action){return new SeekBar.OnSeekBarChangeListener(){public void onProgressChanged(SeekBar s,int p,boolean user){action.run();}public void onStartTrackingTouch(SeekBar s){}public void onStopTrackingTouch(SeekBar s){}};}
  private void startMonitor(String action){Intent i=new Intent(this,MonitorService.class);if(action!=null)i.setAction(action);try{startForegroundService(i);}catch(Exception e){new AlertDialog.Builder(this).setMessage("Unable to start service: "+e.getMessage()).setPositiveButton("OK",null).show();}}
  private void update(){android.content.SharedPreferences p=getSharedPreferences("prefs",MODE_PRIVATE);String s=p.getString("state","stopped");state.setText(s.equals("monitoring")?"Monitoring active":s.equals("logging_out")?"Logging out…":s.equals("paused")?"Wi-Fi monitoring paused":s.equals("unknown")?"Session status unverified":"Ready to monitor");detail.setText(p.getString("detail","Background monitoring requires Start"));}
- protected void onResume(){super.onResume();handler.post(refresh);}protected void onPause(){handler.removeCallbacks(refresh);super.onPause();}
+ protected void onResume(){super.onResume();
+if (android.os.Build.VERSION.SDK_INT >= 31) {
+    android.app.AlarmManager am =
+        (android.app.AlarmManager) getSystemService(ALARM_SERVICE);
+    if (am != null && !am.canScheduleExactAlarms()) {
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Allow precise logout timer")
+            .setMessage("Android needs Alarms & reminders permission for more reliable screen-off logout timing.")
+            .setNegativeButton("Later", null)
+            .setPositiveButton("Open settings", (d, w) -> {
+                android.content.Intent i = new android.content.Intent(
+                    android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM
+                );
+                i.setData(android.net.Uri.parse("package:" + getPackageName()));
+                try { startActivity(i); }
+                catch (Exception e) {
+                    new android.app.AlertDialog.Builder(this)
+                        .setMessage("Open Alarms & reminders in Android app settings.")
+                        .setPositiveButton("OK", null).show();
+                }
+            }).show();
+    }
+}
+handler.post(refresh);}protected void onPause(){handler.removeCallbacks(refresh);super.onPause();}
 }
