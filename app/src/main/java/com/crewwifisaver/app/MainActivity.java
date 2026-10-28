@@ -3,15 +3,19 @@ package com.crewwifisaver.app;
 import android.app.*;import android.os.*;import android.content.*;import android.graphics.Color;import android.provider.Settings;import android.view.*;import android.widget.*;import java.util.Locale;
 
 public class MainActivity extends Activity {
- private TextView state,detail,minuteLabel,trafficLabel;private SeekBar minuteBar,trafficBar;private Switch autoSwitch;private final Handler handler=new Handler(Looper.getMainLooper());
+ private TextView state,detail,minuteLabel,trafficLabel;
+private TextView lastLogoutLabel;private SeekBar minuteBar,trafficBar;private Switch autoSwitch;private final Handler handler=new Handler(Looper.getMainLooper());
  private final Runnable refresh=new Runnable(){public void run(){update();handler.postDelayed(this,2000);}};
  private TextView text(String s,int size){TextView t=new TextView(this);t.setText(s);t.setTextSize(size);t.setTextColor(Color.rgb(28,42,53));t.setPadding(0,12,0,12);return t;}
  public void onCreate(Bundle b){super.onCreate(b);getWindow().setStatusBarColor(Color.rgb(13,35,52));getWindow().setNavigationBarColor(Color.rgb(13,35,52));android.content.SharedPreferences p=getSharedPreferences("prefs",MODE_PRIVATE);ScrollView scroll=new ScrollView(this);LinearLayout root=new LinearLayout(this);root.setOrientation(1);root.setPadding(36,42,36,45);root.setBackgroundColor(Color.rgb(247,250,252));scroll.addView(root);
- root.addView(text("Crew WiFi Saver",27));root.addView(text("Version 2 beta · ship Wi-Fi session protection",13));state=text("Monitoring not started",21);root.addView(state);detail=text("Start monitoring to begin",14);root.addView(detail);
+ root.addView(text("login.com",27));root.addView(text("Version 2.2 beta · ship Wi-Fi session protection",13));state=text("Monitoring not started",21);root.addView(state);detail=text("Start monitoring to begin",14);root.addView(detail);
+lastLogoutLabel = text("Last logout attempt: None yet", 14);
+root.addView(lastLogoutLabel);
+
  Button logout=new Button(this);logout.setText("LOG OUT NOW");logout.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("Log out now?").setMessage("Request logout.com over Wi-Fi. The app cannot yet verify that paid minutes have stopped.").setNegativeButton("Cancel",null).setPositiveButton("Log out",(d,w)->{startMonitor(MonitorService.ACTION_LOGOUT);}).show());root.addView(logout);
  Button start=new Button(this);start.setText("START BACKGROUND MONITORING");start.setOnClickListener(v->{startMonitor(null);});root.addView(start);
  Button stop=new Button(this);stop.setText("STOP MONITORING");stop.setOnClickListener(v->{stopService(new Intent(this,MonitorService.class));state.setText("Monitoring stopped");});root.addView(stop);
- root.addView(text("Automatic logout",19));autoSwitch=new Switch(this);autoSwitch.setText("Enable inactivity logout");autoSwitch.setChecked(p.getBoolean("auto",true));autoSwitch.setOnCheckedChangeListener((v,c)->p.edit().putBoolean("auto",c).apply());root.addView(autoSwitch);
+ root.addView(text("Automatic logout",19));autoSwitch=new Switch(this);autoSwitch.setText("Enable screen-lock logout");autoSwitch.setChecked(p.getBoolean("auto",true));autoSwitch.setOnCheckedChangeListener((v,c)->p.edit().putBoolean("auto",c).apply());root.addView(autoSwitch);
 
 root.addView(text("Screen-off logout delay", 17));
 
@@ -71,12 +75,26 @@ timer.setOnItemSelectedListener(
 
 root.addView(timer);
 Button wifi=new Button(this);wifi.setText("Open Wi-Fi settings");wifi.setOnClickListener(v->startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS)));root.addView(wifi);
- root.addView(text("BETA SAFETY NOTE: Traffic is measured across all device interfaces, not Wi-Fi alone. Free WhatsApp traffic may continue after paid logout. A logout request or failed internet check does NOT verify that paid minutes stopped. Test carefully before relying on automatic logout.",13));setContentView(scroll);
+ root.addView(text(
+"LOGOUT STATUS: A logout request does not guarantee that paid Wi-Fi minutes have stopped. Verify the connection has ended.",
+13));setContentView(scroll);
  if(Build.VERSION.SDK_INT>=33&&checkSelfPermission("android.permission.POST_NOTIFICATIONS")!=getPackageManager().PERMISSION_GRANTED)requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"},5);
  }
  private SeekBar.OnSeekBarChangeListener listener(Runnable action){return new SeekBar.OnSeekBarChangeListener(){public void onProgressChanged(SeekBar s,int p,boolean user){action.run();}public void onStartTrackingTouch(SeekBar s){}public void onStopTrackingTouch(SeekBar s){}};}
  private void startMonitor(String action){Intent i=new Intent(this,MonitorService.class);if(action!=null)i.setAction(action);try{startForegroundService(i);}catch(Exception e){new AlertDialog.Builder(this).setMessage("Unable to start service: "+e.getMessage()).setPositiveButton("OK",null).show();}}
- private void update(){android.content.SharedPreferences p=getSharedPreferences("prefs",MODE_PRIVATE);String s=p.getString("state","stopped");state.setText(s.equals("monitoring")?"Monitoring active":s.equals("logging_out")?"Logging out…":s.equals("paused")?"Wi-Fi monitoring paused":s.equals("unknown")?"Session status unverified":"Ready to monitor");detail.setText(p.getString("detail","Background monitoring requires Start"));}
+ private void update(){
+long lastLogout = getSharedPreferences("prefs", MODE_PRIVATE)
+    .getLong("last_logout_attempt", 0L);
+
+if (lastLogoutLabel != null) {
+    String value = lastLogout == 0L
+        ? "None yet"
+        : java.text.DateFormat.getDateTimeInstance()
+            .format(new java.util.Date(lastLogout));
+
+    lastLogoutLabel.setText("Last logout attempt: " + value);
+}
+android.content.SharedPreferences p=getSharedPreferences("prefs",MODE_PRIVATE);String s=p.getString("state","stopped");state.setText(s.equals("monitoring")?"Monitoring active":s.equals("logging_out")?"Logging out…":s.equals("paused")?"Wi-Fi monitoring paused":s.equals("unknown")?"Session status unverified":"Ready to monitor");detail.setText(p.getString("detail","Background monitoring requires Start"));}
  protected void onResume(){super.onResume();
 if (android.os.Build.VERSION.SDK_INT >= 31) {
     android.app.AlarmManager am =

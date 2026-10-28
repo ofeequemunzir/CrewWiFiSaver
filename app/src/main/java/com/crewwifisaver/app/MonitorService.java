@@ -71,6 +71,10 @@ if(intent!=null && "com.crewwifisaver.app.AUTO_LOGOUT".equals(intent.getAction()
  public void logout(){
     if (logoutAttempted) return;
     logoutAttempted = true;
+getSharedPreferences("prefs", MODE_PRIVATE)
+    .edit()
+    .putLong("last_logout_attempt", System.currentTimeMillis())
+    .apply();
     report("unknown", "Sending background logout request...", 0);
 
     new Thread(() -> {
