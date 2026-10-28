@@ -272,7 +272,24 @@ public class MainActivity extends Activity {
                         startMonitor(MonitorService.ACTION_LOGOUT))
                 .show());
         root.addView(logout, new LinearLayout.LayoutParams(-1, dp(56)));
-        addSpace(root, 16);
+        addSpace(root, 12);
+
+        Button freeTest = new Button(this);
+        freeTest.setAllCaps(false);
+        freeTest.setText("Test Free WhatsApp Activation");
+        freeTest.setTextSize(15);
+        freeTest.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        freeTest.setTextColor(WHITE);
+        freeTest.setBackground(background(INNER, 15));
+        freeTest.setOnClickListener(v -> startActivity(
+                new Intent(this, FreeWhatsAppTestActivity.class)));
+        root.addView(freeTest, new LinearLayout.LayoutParams(-1, dp(52)));
+        TextView experimentHelp = label(
+                "Experimental test. Log out of paid internet first. This does not reconnect paid internet.",
+                11, MUTED, false);
+        experimentHelp.setPadding(dp(5), dp(8), dp(5), dp(8));
+        root.addView(experimentHelp);
+        addSpace(root, 12);
 
         notificationSwitch = createSwitch();
         notificationSwitch.setChecked(prefs.getBoolean("notify_logout", true));
@@ -286,7 +303,7 @@ public class MainActivity extends Activity {
         lastLogoutLabel.setGravity(Gravity.CENTER);
         root.addView(lastLogoutLabel);
         addSpace(root, 10);
-        TextView version = label("login.com  ·  v2.3 beta", 10, Color.rgb(105, 113, 124), false);
+        TextView version = label("login.com  ·  v2.5 activation test", 10, Color.rgb(105, 113, 124), false);
         version.setGravity(Gravity.CENTER);
         root.addView(version);
         setContentView(scroll);

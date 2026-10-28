@@ -44,15 +44,6 @@ public class MonitorService extends Service {
         alerts.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
         notifications.createNotificationChannel(alerts);
 
-        NotificationChannel whatsapp = new NotificationChannel(
-            "whatsapp_activation_v1",
-            "Free WhatsApp Activation",
-            NotificationManager.IMPORTANCE_HIGH
-        );
-        whatsapp.setDescription("Free WhatsApp activation notifications");
-        whatsapp.enableVibration(true);
-        notifications.createNotificationChannel(whatsapp);
-
         startForeground(MONITOR_NOTIFICATION_ID, monitorNotification("Screen-off monitoring ready"));
         setupScreenMonitoring();
     }
@@ -153,40 +144,11 @@ public class MonitorService extends Service {
         }
     }
 
-    /** The tested GET + manual HTTP/HTTPS redirect workflow is preserved. */
-    private void notifyWhatsAppActivated() {
-        Notification n = new Notification.Builder(this, "whatsapp_activation_v1")
-            .setSmallIcon(R.drawable.ic_stat_wifi_logout)
-            .setContentTitle("Free WhatsApp Activated")
-            .setContentText("WhatsApp activation request completed.")
-            .setAutoCancel(true).build();
-        getSystemService(NotificationManager.class).notify(14, n);
-    }
-
-    private void activateFreeWhatsApp() {
-        HttpURLConnection connection = null;
-        try {
-            Thread.sleep(2000);
-            URL url = new URL("https://onboardicafe.com/celebrity/CaptivePortalPlanConnected.aspx");
-            connection = (HttpURLConnection) url.openConnection();
-            connection.setRequestMethod("GET");
-            connection.setConnectTimeout(10000);
-            connection.setReadTimeout(10000);
-            connection.setUseCaches(false);
-            int code = connection.getResponseCode();
-            if (code >= 200 && code < 300) {
-                report("unknown", "WhatsApp activation page responded");
-                notifyWhatsAppActivated();
-            } else {
-                report("unknown", "WhatsApp activation HTTP " + code);
-            }
-        } catch (Exception e) {
-            report("unknown", "WhatsApp activation failed: " + e.getMessage());
-        } finally {
-            if (connection != null) connection.disconnect();
-        }
-    }
-
+    /**
+     * Never interpret a plain HTTP 200 from the portal as free WhatsApp activation.
+     * The complimentary entitlement requires portal actions that must be tested first.
+     * The existing, working paid logout request is intentionally unchanged.
+     */
     public void logout(boolean automatic) {
         if (logoutAttempted) return;
         logoutAttempted = true;
@@ -238,7 +200,6 @@ public class MonitorService extends Service {
                 }
 
                 report("unknown", "Logout HTTP " + code + " - verify paid session ended");
-                activateFreeWhatsApp();
                 if (automatic) {
                     alertAutomaticLogout("Logout request finished. Check that your Crew Wi-Fi is disconnected.");
                 }
