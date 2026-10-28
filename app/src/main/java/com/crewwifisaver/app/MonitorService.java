@@ -103,7 +103,7 @@ public class MonitorService extends Service {
         PendingIntent logoutIntent = PendingIntent.getService(this, 2, out,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         return new Notification.Builder(this, MONITOR_CHANNEL)
-                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setSmallIcon(R.drawable.ic_stat_wifi_logout)
                 .setContentTitle("login.com")
                 .setContentText(detail)
                 .setContentIntent(openIntent)
@@ -126,10 +126,11 @@ public class MonitorService extends Service {
         PendingIntent openIntent = PendingIntent.getActivity(this, 3, open,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         Notification alert = new Notification.Builder(this, ALERT_CHANNEL)
-                .setSmallIcon(android.R.drawable.stat_sys_download_done)
-                .setContentTitle("Logout request finished")
-                .setContentText(message)
-                .setStyle(new Notification.BigTextStyle().bigText(message))
+                .setSmallIcon(R.drawable.ic_stat_wifi_logout)
+                .setContentTitle(
+                        message.startsWith("Logout request finished")
+                        ? "Logout Request Completed"
+                        : "Logout Status Unknown")
                 .setContentIntent(openIntent)
                 .setAutoCancel(true)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
@@ -195,12 +196,12 @@ public class MonitorService extends Service {
 
                 report("unknown", "Logout HTTP " + code + " - verify paid session ended");
                 if (automatic) {
-                    alertAutomaticLogout("Request completed (HTTP " + code +"). Check your Wi-Fi session.");
+                    alertAutomaticLogout("Logout request finished. Check that your Crew Wi-Fi is disconnected.");
                 }
             } catch (Exception e) {
                 report("unknown", "Logout request failed: " + e.getMessage());
                 if (automatic) {
-                    alertAutomaticLogout("Could not confirm the logout request. Check your Wi-Fi session.");
+                    alertAutomaticLogout("Logout could not be confirmed. Check your Crew Wi-Fi connection.");
                 }
             } finally {
                 if (conn != null) conn.disconnect();
