@@ -80,7 +80,7 @@ if(intent!=null && "com.crewwifisaver.app.AUTO_LOGOUT".equals(intent.getAction()
                 new java.net.URL("http://logout.com/");
             conn = (java.net.HttpURLConnection)
                 url.openConnection();
-            conn.setRequestMethod("HEAD");
+            conn.setRequestMethod("GET");
             conn.setInstanceFollowRedirects(true);
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(10000);
