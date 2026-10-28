@@ -81,12 +81,44 @@ if(intent!=null && "com.crewwifisaver.app.AUTO_LOGOUT".equals(intent.getAction()
             conn = (java.net.HttpURLConnection)
                 url.openConnection();
             conn.setRequestMethod("GET");
-            conn.setInstanceFollowRedirects(true);
+            conn.setInstanceFollowRedirects(false);
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(10000);
             conn.setUseCaches(false);
 
             int code = conn.getResponseCode();
+java.net.URL currentUrl = url;
+int redirects = 0;
+
+while (code >= 300 && code < 400 && redirects < 10) {
+    String location = conn.getHeaderField("Location");
+    if (location == null) break;
+
+    currentUrl = new java.net.URL(currentUrl, location);
+    String protocol = currentUrl.getProtocol();
+    if (!protocol.equals("http") && !protocol.equals("https")) {
+        throw new java.io.IOException("Unsupported redirect");
+    }
+
+    conn.disconnect();
+    conn = (java.net.HttpURLConnection) currentUrl.openConnection();
+    conn.setRequestMethod("GET");
+    conn.setInstanceFollowRedirects(false);
+    conn.setConnectTimeout(10000);
+    conn.setReadTimeout(10000);
+    conn.setUseCaches(false);
+
+    code = conn.getResponseCode();
+    redirects++;
+}
+
+try (java.io.InputStream input = conn.getInputStream()) {
+    byte[] buffer = new byte[4096];
+    while (input.read(buffer) != -1) {}
+} catch (java.io.IOException ignored) {
+    // The portal may disconnect the network during logout.
+}
+
             report("unknown",
                 "Logout HTTP " + code +
                 " - verify paid session ended", 0);
