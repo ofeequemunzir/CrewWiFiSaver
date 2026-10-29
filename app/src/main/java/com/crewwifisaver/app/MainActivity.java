@@ -3,6 +3,7 @@ package com.crewwifisaver.app;
 import android.app.Activity;
 import android.app.AlarmManager;
 import android.app.AlertDialog;
+import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -13,750 +14,523 @@ import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.SystemClock;
 import android.provider.Settings;
-import android.text.InputType;
-import android.text.TextWatcher;
-import android.text.Editable;
 import android.view.Gravity;
 import android.view.View;
-import android.view.inputmethod.EditorInfo;
-import android.widget.Button;
 import android.widget.EditText;
-import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.NumberPicker;
 import android.widget.ScrollView;
-import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
+import android.widget.Toast;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** Compact three-tab Android UI. Uses the existing app ID so it installs as an update. */
+/** Crew Connect v2.7: browser-owned sign-in; one Wi-Fi button; two automatic logout controls. */
 public class MainActivity extends Activity {
-    private static final int BG = Color.rgb(7, 17, 27);
-    private static final int CARD = Color.rgb(17, 30, 43);
-    private static final int INNER = Color.rgb(23, 39, 56);
-    private static final int WHITE = Color.rgb(247, 248, 248);
-    private static final int MUTED = Color.rgb(151, 169, 187);
-    private static final int SOFT = Color.rgb(53, 77, 102);
-    private static final int GREEN = Color.rgb(76, 220, 141);
-    private static final int BLUE = Color.rgb(75, 136, 232);
-    private static final int BORDER = Color.rgb(34, 53, 71);
+    private static final int BG = Color.rgb(15, 17, 19);
+    private static final int BUTTON = Color.rgb(31, 34, 37);
+    private static final int WHITE = Color.rgb(241, 242, 243);
+    private static final int MUTED = Color.rgb(155, 158, 163);
+    private static final int DIVIDER = Color.rgb(44, 47, 50);
+    private static final int ACCENT = Color.rgb(210, 214, 218);
+    private static final String PORTAL = "https://onboardicafe.com/";
+    private static final int MAX_HOURS = 23;
 
+    private final Handler ui = new Handler(Looper.getMainLooper());
+    private final AtomicBoolean busy = new AtomicBoolean(false);
     private SharedPreferences prefs;
-    private final Handler handler = new Handler(Looper.getMainLooper());
-    private final Runnable refresh = new Runnable() {
-        @Override public void run() {
-            updateSessionText();
-            maybeLaunchFreePortal();
-            handler.postDelayed(this, 1000);
-        }
-    };
-    private LinearLayout content;
-    private LinearLayout nav;
-    private TextView elapsedLabelView;
-    private TextView elapsedView;
-    private TextView remainingView;
-    private TextView statusView;
-    private TextView statusDetailView;
-    private TextView packageView;
-    private WifiCircle wifiCircle;
-    private boolean homeRenderedConnected = false;
-    private String selectedTab = "home";
-    private String accountUsername = "";
-    private String accountPin = ""; // Never saved in preferences or written to logs.
-    private String accountError = "";
-    private TextView accountErrorView;
-    private EditText accountUserField;
-    private EditText accountPinField;
-    private boolean portalOpening = false;
-    private boolean promptShown = false;
-    private final AtomicBoolean connectionCheckRunning = new AtomicBoolean(false);
+    private LinearLayout rootContent;
+    private WifiButton wifiButton;
+    private TextView statusLabel;
+    private TextView secondaryLabel;
+    private TextView remainingLabel;
+    private LinearLayout wheelContainer;
+    private NumberPicker hourPicker;
+    private NumberPicker minutePicker;
+    private NumberPicker secondPicker;
+    private boolean savingWheels = false;
+    private boolean uiBusy = false;
 
-    @Override public void onCreate(Bundle state) {
-        super.onCreate(state);
+    @Override public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
         prefs = getSharedPreferences("prefs", MODE_PRIVATE);
-        LogoutAlarm.cancel(this); // Cancel any pending v2.5 screen-off delay alarm.
-        // One-time migration from the original screen-off delay design.
+        LogoutAlarm.cancel(this); // Clear old screen-delay alarms from pre-v2.6 versions.
         if (!prefs.contains("screen_lock")) {
-            boolean enabled = prefs.getBoolean("auto", true);
-            prefs.edit().putBoolean("screen_lock", enabled)
-                    .putBoolean("auto", enabled)
-                    .putBoolean("instant", true)
-                    .apply();
+            boolean old = prefs.getBoolean("auto", true);
+            prefs.edit().putBoolean("screen_lock", old).apply();
         }
-        if (prefs.getBoolean("screen_lock", true)) startMonitor(null);
-        buildShell();
-        showTab("home");
-        if (prefs.getBoolean("screen_lock", true) || prefs.getBoolean("timed_disconnect", false))
-            requestNotificationPermission();
+        // Older installations used 30-second intervals. Existing settings remain intact.
+        if (!prefs.contains("timed_seconds") || prefs.getInt("timed_seconds", 0) <= 0)
+            prefs.edit().putInt("timed_seconds", 300).apply();
+        if (!prefs.getBoolean("v27_privacy_migrated", false)) {
+            // The earlier embedded portal could have left cached balance and package details.
+            // They must never be presented as live readings after a browser-only sign-in.
+            prefs.edit().putInt("reported_remaining_seconds", -1)
+                    .putString("active_package", "")
+                    .putBoolean("v27_privacy_migrated", true).apply();
+        }
+        buildUi();
+        updateMonitor();
+        requestNotificationPermissionIfNeeded();
     }
 
-    private int dp(float n) { return Math.round(n * getResources().getDisplayMetrics().density); }
-    private GradientDrawable rounded(int color, int radius) {
-        GradientDrawable gd = new GradientDrawable();
-        gd.setColor(color); gd.setCornerRadius(dp(radius)); return gd;
+    private int dp(float px) { return Math.round(px * getResources().getDisplayMetrics().density); }
+    private GradientDrawable background(int color, int radius) {
+        GradientDrawable shape = new GradientDrawable();
+        shape.setColor(color);
+        shape.setCornerRadius(dp(radius));
+        return shape;
     }
-    private GradientDrawable outlined(int color, int radius) {
-        GradientDrawable gd = rounded(color, radius);
-        gd.setStroke(dp(1), BORDER); return gd;
-    }
-    private TextView text(String s, int sp, int color, boolean medium) {
-        TextView t = new TextView(this);
-        t.setText(s); t.setTextSize(sp); t.setTextColor(color);
-        t.setIncludeFontPadding(false);
-        t.setTypeface(Typeface.create(medium ? "sans-serif-medium" : "sans-serif", Typeface.NORMAL));
-        return t;
+    private TextView label(String value, int size, int color, boolean strong) {
+        TextView tv = new TextView(this);
+        tv.setText(value); tv.setTextColor(color); tv.setTextSize(size);
+        tv.setIncludeFontPadding(false);
+        tv.setTypeface(Typeface.create(strong ? "sans-serif-medium" : "sans-serif", Typeface.NORMAL));
+        return tv;
     }
     private LinearLayout column() {
-        LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.VERTICAL); return l;
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        return box;
     }
     private LinearLayout row() {
-        LinearLayout l = new LinearLayout(this);
-        l.setOrientation(LinearLayout.HORIZONTAL); l.setGravity(Gravity.CENTER_VERTICAL);
-        return l;
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.HORIZONTAL);
+        box.setGravity(Gravity.CENTER_VERTICAL);
+        return box;
     }
-    private void space(LinearLayout l, int h) {
-        l.addView(new View(this), new LinearLayout.LayoutParams(1, dp(h)));
+    private void space(LinearLayout container, int height) {
+        container.addView(new View(this), new LinearLayout.LayoutParams(1, dp(height)));
     }
-    private void divider(LinearLayout l) {
-        View v = new View(this); v.setBackgroundColor(BORDER);
-        l.addView(v, new LinearLayout.LayoutParams(-1, dp(1)));
+    private void line(LinearLayout container) {
+        View v = new View(this); v.setBackgroundColor(DIVIDER);
+        container.addView(v, new LinearLayout.LayoutParams(-1, dp(1)));
     }
-    private Button button(String label, int color, int foreground, int height) {
-        Button b = new Button(this);
-        b.setAllCaps(false); b.setText(label); b.setTextSize(13);
-        b.setLetterSpacing(0.025f); b.setTextColor(foreground);
-        b.setTypeface(Typeface.create("sans-serif-medium", 0));
-        b.setBackground(rounded(color, 30));
-        b.setMinimumHeight(0); b.setMinHeight(0); b.setMinimumWidth(0); b.setMinWidth(0);
-        b.setPadding(dp(14), 0, dp(14), 0);
-        b.setLayoutParams(new LinearLayout.LayoutParams(-1, dp(height)));
-        return b;
-    }
-    private Switch toggle(boolean checked) {
+    private Switch toggle(boolean on) {
         Switch s = new Switch(this);
-        s.setShowText(false); s.setChecked(checked);
-        s.setThumbTintList(new ColorStateList(new int[][]{
-                new int[]{android.R.attr.state_checked}, new int[]{}},
-                new int[]{WHITE, MUTED}));
-        s.setTrackTintList(new ColorStateList(new int[][]{
-                new int[]{android.R.attr.state_checked}, new int[]{}},
-                new int[]{BLUE, SOFT}));
+        s.setShowText(false);
+        s.setChecked(on);
+        s.setThumbTintList(new ColorStateList(new int[][] {
+                new int[] { android.R.attr.state_checked }, new int[] {} },
+                new int[] { WHITE, WHITE }));
+        s.setTrackTintList(new ColorStateList(new int[][] {
+                new int[] { android.R.attr.state_checked }, new int[] {} },
+                new int[] { Color.rgb(105, 110, 116), Color.rgb(65, 68, 72) }));
         return s;
     }
-    private LinearLayout card() {
-        LinearLayout c = column();
-        c.setPadding(dp(16), dp(17), dp(16), dp(17));
-        c.setBackground(outlined(CARD, 17));
-        return c;
-    }
-    private void buildShell() {
-        LinearLayout root = column(); root.setBackgroundColor(BG);
-        LinearLayout header = row();
-        header.setPadding(dp(22), dp(22), dp(22), dp(14));
-        TextView brand = text("Crew Connect", 26, WHITE, false);
-        brand.setTypeface(Typeface.create("sans-serif-light", 0));
-        header.addView(brand, new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView settings = text("⚙", 23, MUTED, false);
-        settings.setGravity(Gravity.CENTER);
-        settings.setContentDescription("Automation settings");
-        settings.setOnClickListener(v -> showTab("automation"));
-        header.addView(settings, new LinearLayout.LayoutParams(dp(42), dp(42)));
-        root.addView(header);
-
+    private void buildUi() {
+        LinearLayout root = column();
+        root.setBackgroundColor(BG);
         ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true); scroll.setVerticalScrollBarEnabled(false);
-        content = column();
-        content.setPadding(dp(22), dp(10), dp(22), dp(20));
-        scroll.addView(content);
-        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
-
-        nav = row();
-        nav.setPadding(dp(18), dp(10), dp(18), dp(10));
-        nav.setBackgroundColor(BG);
-        divider(root);
-        root.addView(nav, new LinearLayout.LayoutParams(-1, dp(78)));
+        scroll.setFillViewport(true);
+        scroll.setVerticalScrollBarEnabled(false);
+        rootContent = column();
+        rootContent.setPadding(dp(23), dp(21), dp(23), dp(26));
+        scroll.addView(rootContent);
+        root.addView(scroll, new LinearLayout.LayoutParams(-1, -1));
         setContentView(root);
-    }
-    private void buildNav() {
-        nav.removeAllViews();
-        navItem("home", "Home");
-        navItem("automation", "Automation");
-        navItem("account", "Account");
-    }
-    private void navItem(String key, String label) {
-        boolean selected = key.equals(selectedTab);
-        LinearLayout item = column(); item.setGravity(Gravity.CENTER);
-        NavIcon icon = new NavIcon(key, selected);
-        item.addView(icon, new LinearLayout.LayoutParams(dp(28), dp(26)));
-        space(item, 3);
-        TextView title = text(label, 11, selected ? WHITE : MUTED, selected);
-        title.setGravity(Gravity.CENTER);
-        item.addView(title);
-        space(item, 7);
-        View line = new View(this); line.setBackground(rounded(selected ? WHITE : BG, 2));
-        item.addView(line, new LinearLayout.LayoutParams(dp(35), dp(2)));
-        item.setOnClickListener(v -> showTab(key));
-        nav.addView(item, new LinearLayout.LayoutParams(0, -1, 1f));
-    }
-    private void showTab(String tab) {
-        selectedTab = tab;
-        content.removeAllViews();
-        elapsedLabelView = null; elapsedView = null; remainingView = null; statusView = null;
-        statusDetailView = null; packageView = null; wifiCircle = null;
-        accountErrorView = null;
-        accountUserField = null;
-        accountPinField = null;
-        buildNav();
-        if ("home".equals(tab)) buildHome();
-        else if ("automation".equals(tab)) buildAutomation();
-        else buildAccount();
-        updateSessionText();
-    }
 
-    private boolean connected() {
-        return prefs.getBoolean("session_active", false) &&
-                "connected".equals(prefs.getString("connection_status", "unknown"));
-    }
-    private void buildHome() {
-        homeRenderedConnected = connected();
-        // Hero: preserve the approved placement, keeping whitespace around the Wi-Fi ring.
+        LinearLayout top = row();
+        TextView brand = label("Crew Connect", 22, WHITE, false);
+        brand.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
+        top.addView(brand, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView settings = label("⚙", 24, MUTED, false);
+        settings.setGravity(Gravity.CENTER);
+        settings.setContentDescription("App settings");
+        settings.setOnClickListener(v -> showSettings());
+        top.addView(settings, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        rootContent.addView(top);
+
+        space(rootContent, 66);
         LinearLayout hero = column();
         hero.setGravity(Gravity.CENTER_HORIZONTAL);
-        space(hero, 44);
-        wifiCircle = new WifiCircle(); wifiCircle.setConnected(connected());
-        hero.addView(wifiCircle, new LinearLayout.LayoutParams(dp(160), dp(160)));
-        space(hero, 22);
-        statusView = text("INTERNET OFFLINE", 16, WHITE, true);
-        statusView.setLetterSpacing(0.16f);
-        statusView.setGravity(Gravity.CENTER);
-        hero.addView(statusView);
-        space(hero, 9);
-        statusDetailView = text("Your paid minutes are not in use", 13, MUTED, false);
-        statusDetailView.setGravity(Gravity.CENTER);
-        hero.addView(statusDetailView);
-        content.addView(hero);
-        space(content, 32);
+        wifiButton = new WifiButton();
+        wifiButton.setContentDescription("Check internet connection");
+        wifiButton.setOnClickListener(v -> onWifiClicked());
+        hero.addView(wifiButton, new LinearLayout.LayoutParams(dp(132), dp(132)));
+        space(hero, 24);
+        statusLabel = label("Checking connection…", 17, WHITE, true);
+        statusLabel.setGravity(Gravity.CENTER);
+        hero.addView(statusLabel);
+        space(hero, 7);
+        secondaryLabel = label("Please wait", 12, MUTED, false);
+        secondaryLabel.setGravity(Gravity.CENTER);
+        hero.addView(secondaryLabel);
+        space(hero, 13);
+        remainingLabel = label("", 12, MUTED, false);
+        remainingLabel.setGravity(Gravity.CENTER);
+        hero.addView(remainingLabel);
+        rootContent.addView(hero);
 
-        Button primary = button(connected() ? "INSTANT DISCONNECT" : "CONNECT TO INTERNET",
-                connected() ? SOFT : WHITE, connected() ? WHITE : BG, 56);
-        primary.setOnClickListener(v -> {
-            if (connected()) confirmLogout();
-            else showTab("account");
-        });
-        content.addView(primary);
-        space(content, 25);
-
-        LinearLayout metrics = row();
-        LinearLayout left = column();
-        elapsedLabelView = text("Session elapsed", 11, MUTED, false);
-        left.addView(elapsedLabelView); space(left, 7);
-        elapsedView = text("00:00:00", 20, WHITE, true);
-        left.addView(elapsedView);
-        metrics.addView(left, new LinearLayout.LayoutParams(0, -2, 1f));
-        View line = new View(this); line.setBackgroundColor(BORDER);
-        metrics.addView(line, new LinearLayout.LayoutParams(dp(1), dp(49)));
-        LinearLayout right = column(); right.setPadding(dp(20), 0, 0, 0);
-        right.addView(text("Minutes remaining", 11, MUTED, false)); space(right, 7);
-        remainingView = text("—", 20, WHITE, true);
-        right.addView(remainingView);
-        metrics.addView(right, new LinearLayout.LayoutParams(0, -2, 1f));
-        content.addView(metrics);
-        space(content, 30);
-
-        LinearLayout free = card();
-        LinearLayout freeRow = row();
-        freeRow.addView(new MessageIcon(), new LinearLayout.LayoutParams(dp(35), dp(35)));
-        LinearLayout names = column(); names.setPadding(dp(9), 0, 0, 0);
-        names.addView(text("Free WhatsApp Text", 14, WHITE, true));
-        space(names, 5);
-        String freeStatus = "completed".equals(prefs.getString("free_portal_state", ""))
-                ? "Portal completed · verify with a text" : "Automatic activation after logout";
-        names.addView(text(freeStatus, 11, MUTED, false));
-        freeRow.addView(names, new LinearLayout.LayoutParams(0, -2, 1f));
-        Switch s = toggle(prefs.getBoolean("auto_whatsapp", true));
-        s.setOnCheckedChangeListener((v, on) -> prefs.edit().putBoolean("auto_whatsapp", on).apply());
-        freeRow.addView(s); free.addView(freeRow);
-        content.addView(free);
-        space(content, 13);
-
-        LinearLayout second = card();
-        second.setOnClickListener(v -> showTab("automation"));
-        LinearLayout summary = row();
-        TextView shield = text("◇", 26, MUTED, false);
-        shield.setGravity(Gravity.CENTER);
-        summary.addView(shield, new LinearLayout.LayoutParams(dp(35), -2));
-        LinearLayout names2 = column(); names2.setPadding(dp(9), 0, 0, 0);
-        names2.addView(text("Automatic Disconnect", 14, WHITE, true));
-        space(names2, 5);
-        boolean lock = prefs.getBoolean("screen_lock", true);
-        boolean timed = prefs.getBoolean("timed_disconnect", false);
-        String description = (lock ? "Screen lock" : "Screen lock off") + "  ·  " +
-                (timed ? formatDuration(prefs.getInt("timed_seconds", 300)) + " timer" : "Timer off");
-        names2.addView(text(description, 11, MUTED, false));
-        summary.addView(names2, new LinearLayout.LayoutParams(0, -2, 1f));
-        summary.addView(text("›", 23, MUTED, false));
-        second.addView(summary);
-        content.addView(second);
-        space(content, 24);
-        TextView quick = text("Activate Free WhatsApp Text manually", 12, MUTED, false);
-        quick.setGravity(Gravity.CENTER);
-        quick.setPadding(0, dp(12), 0, dp(12));
-        quick.setOnClickListener(v -> launchFreePortal(false));
-        content.addView(quick);
-    }
-
-    private void buildAutomation() {
-        space(content, 13);
-        TextView title = text("Automation", 21, WHITE, true);
-        content.addView(title);
-        space(content, 9);
-        content.addView(text("Set it once. Crew Connect handles the rest.", 12, MUTED, false));
-        space(content, 25);
-
-        LinearLayout lockCard = card();
+        space(rootContent, 75);
+        line(rootContent);
+        space(rootContent, 22);
         Switch lock = toggle(prefs.getBoolean("screen_lock", true));
-        addSettingRow(lockCard, "▢", "Screen Lock Disconnect", "Log out when phone is locked", lock);
+        settingsRow(rootContent, "▢", "Auto logout when phone is locked",
+                "Sign out when you lock your phone", lock);
         lock.setOnCheckedChangeListener((v, checked) -> {
             prefs.edit().putBoolean("screen_lock", checked)
-                    .putBoolean("auto", checked).putBoolean("instant", true).apply();
-            if (checked) startMonitor(null);
-            else if (!prefs.getBoolean("timed_disconnect", false))
-                stopService(new Intent(this, MonitorService.class));
+                    .putBoolean("auto", checked)
+                    .putBoolean("instant", true).apply();
+            updateMonitor();
+            if (checked) requestNotificationPermissionIfNeeded();
         });
-        content.addView(lockCard);
-        space(content, 15);
+        space(rootContent, 22);
+        line(rootContent);
+        space(rootContent, 22);
 
-        LinearLayout timerCard = card();
-        Switch timed = toggle(prefs.getBoolean("timed_disconnect", false));
-        addSettingRow(timerCard, "◷", "Timed Disconnect", "Disconnect after selected duration", timed);
-        space(timerCard, 17);
-        LinearLayout sliderPanel = column();
-        sliderPanel.setPadding(dp(15), dp(17), dp(15), dp(16));
-        sliderPanel.setBackground(rounded(INNER, 14));
-        TextView value = text(formatDuration(prefs.getInt("timed_seconds", 300)), 29, WHITE, true);
-        value.setGravity(Gravity.CENTER);
-        sliderPanel.addView(value);
-        space(sliderPanel, 7);
-        TextView hint = text("Minutes : Seconds", 10, MUTED, false);
-        hint.setGravity(Gravity.CENTER);
-        sliderPanel.addView(hint);
-        space(sliderPanel, 12);
-        SeekBar bar = new SeekBar(this); bar.setMax(29);
-        int initial = Math.max(30, Math.min(900, prefs.getInt("timed_seconds", 300)));
-        bar.setProgress((initial - 30) / 30);
-        bar.setProgressTintList(ColorStateList.valueOf(BLUE));
-        bar.setThumbTintList(ColorStateList.valueOf(WHITE));
-        bar.setProgressBackgroundTintList(ColorStateList.valueOf(SOFT));
-        bar.setEnabled(timed.isChecked()); bar.setAlpha(timed.isChecked() ? 1f : 0.35f);
-        sliderPanel.addView(bar, new LinearLayout.LayoutParams(-1, dp(40)));
-        LinearLayout limits = row();
-        limits.addView(text("30 seconds", 11, MUTED, false), new LinearLayout.LayoutParams(0, -2, 1f));
-        limits.addView(text("15 minutes", 11, MUTED, false));
-        sliderPanel.addView(limits);
-        timerCard.addView(sliderPanel);
-        timed.setOnCheckedChangeListener((v, checked) -> {
+        Switch timer = toggle(prefs.getBoolean("timed_disconnect", false));
+        settingsRow(rootContent, "◷", "Auto logout timer", "Sign out after a selected duration", timer);
+        space(rootContent, 12);
+        wheelContainer = column();
+        wheelContainer.setBackground(background(Color.rgb(23, 26, 29), 14));
+        wheelContainer.setPadding(dp(10), dp(13), dp(10), dp(10));
+        initWheels(wheelContainer);
+        wheelContainer.setVisibility(timer.isChecked() ? View.VISIBLE : View.GONE);
+        rootContent.addView(wheelContainer);
+        timer.setOnCheckedChangeListener((v, checked) -> {
+            wheelContainer.setVisibility(checked ? View.VISIBLE : View.GONE);
+            if (checked && prefs.getInt("timed_seconds", 0) <= 0) {
+                prefs.edit().putInt("timed_seconds", 300).apply();
+                setWheelValues(300);
+            }
             prefs.edit().putBoolean("timed_disconnect", checked).apply();
-            bar.setEnabled(checked); bar.setAlpha(checked ? 1f : 0.35f);
             SessionLogoutAlarm.update(this);
-            if (checked) { requestExactAlarm(); startMonitor(null); }
-            else if (!prefs.getBoolean("screen_lock", true))
-                stopService(new Intent(this, MonitorService.class));
+            updateMonitor();
+            if (checked) { requestExactAlarmPermission(); requestNotificationPermissionIfNeeded(); }
         });
-        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
-                int seconds = 30 + p * 30;
-                value.setText(formatDuration(seconds));
-                if (fromUser) {
-                    prefs.edit().putInt("timed_seconds", seconds).apply();
-                    SessionLogoutAlarm.update(MainActivity.this);
+
+        space(rootContent, 25);
+        TextView privacy = label("Login and package selection happen in your browser.", 11, MUTED, false);
+        privacy.setGravity(Gravity.CENTER);
+        rootContent.addView(privacy);
+        space(rootContent, 15);
+        setStatusUi();
+    }
+
+    private void settingsRow(LinearLayout host, String glyph, String heading, String sub, Switch control) {
+        LinearLayout line = row();
+        TextView symbol = label(glyph, 24, MUTED, false);
+        symbol.setGravity(Gravity.CENTER);
+        line.addView(symbol, new LinearLayout.LayoutParams(dp(34), dp(38)));
+        LinearLayout names = column(); names.setPadding(dp(9), 0, dp(6), 0);
+        names.addView(label(heading, 13, WHITE, true));
+        space(names, 6);
+        names.addView(label(sub, 11, MUTED, false));
+        line.addView(names, new LinearLayout.LayoutParams(0, -2, 1f));
+        line.addView(control);
+        host.addView(line);
+    }
+
+    private NumberPicker wheel(int max, int value) {
+        NumberPicker picker = new NumberPicker(this);
+        picker.setMinValue(0);
+        picker.setMaxValue(max);
+        picker.setFormatter(n -> String.format(Locale.US, "%02d", n));
+        picker.setWrapSelectorWheel(max >= 5);
+        picker.setDescendantFocusability(NumberPicker.FOCUS_BLOCK_DESCENDANTS);
+        picker.setValue(value);
+        picker.setContentDescription("Select logout time");
+        for (int j=0; j<picker.getChildCount(); j++) {
+            View child=picker.getChildAt(j);
+            if (child instanceof EditText) {
+                ((EditText)child).setTextColor(WHITE);
+                ((EditText)child).setTextSize(20);
+                ((EditText)child).setGravity(Gravity.CENTER);
+            }
+        }
+        return picker;
+    }
+    private void initWheels(LinearLayout host) {
+        int seconds = Math.max(1, prefs.getInt("timed_seconds", 300));
+        hourPicker = wheel(MAX_HOURS, Math.min(MAX_HOURS, seconds/3600));
+        minutePicker = wheel(59, (seconds/60)%60);
+        secondPicker = wheel(59, seconds%60);
+        LinearLayout titles = row();
+        for (String t : new String[]{"Hours", "Minutes", "Seconds"}) {
+            TextView title = label(t, 11, MUTED, false);
+            title.setGravity(Gravity.CENTER);
+            titles.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
+        }
+        host.addView(titles);
+        space(host, 6);
+        LinearLayout wheels = row();
+        for (NumberPicker picker : new NumberPicker[]{hourPicker, minutePicker, secondPicker}) {
+            wheels.addView(picker, new LinearLayout.LayoutParams(0, dp(134), 1f));
+        }
+        host.addView(wheels);
+        NumberPicker.OnValueChangeListener onChange = (p, prev, value) -> persistTimerPicker();
+        hourPicker.setOnValueChangedListener(onChange);
+        minutePicker.setOnValueChangedListener(onChange);
+        secondPicker.setOnValueChangedListener(onChange);
+        TextView note = label("Scroll each column to set the logout time", 11, MUTED, false);
+        note.setGravity(Gravity.CENTER);
+        host.addView(note);
+    }
+    private void setWheelValues(int seconds) {
+        savingWheels = true;
+        hourPicker.setValue(Math.min(MAX_HOURS, seconds/3600));
+        minutePicker.setValue((seconds/60)%60);
+        secondPicker.setValue(seconds%60);
+        savingWheels = false;
+    }
+    private void persistTimerPicker() {
+        if (savingWheels) return;
+        int seconds = hourPicker.getValue()*3600 + minutePicker.getValue()*60 + secondPicker.getValue();
+        if (seconds == 0) {
+            // Never create an instantaneous repeated auto-logout alarm.
+            seconds = 1;
+            savingWheels = true;
+            secondPicker.setValue(1);
+            savingWheels = false;
+        }
+        prefs.edit().putInt("timed_seconds", seconds).apply();
+        if (prefs.getBoolean("timed_disconnect", false)) SessionLogoutAlarm.update(this);
+    }
+
+    private void setStatusUi() {
+        if (wifiButton == null || statusLabel == null) return;
+        String current = prefs.getString("connection_status", "checking");
+        boolean active = "connected".equals(current) && prefs.getBoolean("session_active", false);
+        boolean checking = uiBusy || "checking".equals(current) ||
+                "logging_out".equals(current) || "unknown".equals(current);
+        wifiButton.setState(checking ? 1 : (active ? 2 : 0));
+        if ("logging_out".equals(current)) {
+            statusLabel.setText("Disconnecting…");
+            secondaryLabel.setText("Checking paid internet");
+        } else if (checking) {
+            statusLabel.setText("Checking…");
+            secondaryLabel.setText("Verifying ship Wi-Fi");
+        } else if (active) {
+            statusLabel.setText("Connected");
+            secondaryLabel.setText("Tap to disconnect");
+        } else {
+            statusLabel.setText("Tap to connect");
+            secondaryLabel.setText("Paid internet offline");
+        }
+        wifiButton.setContentDescription(checking ? "Checking connection" :
+                (active ? "Disconnect paid internet" : "Open onboard iCafe login in browser"));
+        int remaining = prefs.getInt("reported_remaining_seconds", -1);
+        String source = prefs.getString("session_start_source", "");
+        if (active && remaining >= 0 && "portal".equals(source)) {
+            // A portal-reported allowance, not the elapsed timer from first detection.
+            remainingLabel.setText((remaining / 60) + " min remaining (last reported)");
+        } else if (active) {
+            remainingLabel.setText("Minutes remaining · unavailable");
+        } else {
+            remainingLabel.setText("");
+        }
+    }
+    private void onWifiClicked() {
+        if (!busy.compareAndSet(false, true)) return;
+        uiBusy = true;
+        setStatusUi();
+        wifiButton.animate().scaleX(.95f).scaleY(.95f).setDuration(105)
+                .withEndAction(() -> wifiButton.animate().scaleX(1).scaleY(1).setDuration(140).start())
+                .start();
+        new Thread(() -> {
+            PaidInternetProbe.Result status = PaidInternetProbe.checkWithRetry(this);
+            boolean wasLoggingOut = prefs.getBoolean("logout_in_progress", false);
+            if (!wasLoggingOut) PaidInternetProbe.updateOnAppOpen(this, status);
+            ui.post(() -> {
+                busy.set(false);
+                uiBusy = false;
+                if (isFinishing() || isDestroyed()) return;
+                setStatusUi();
+                if (wasLoggingOut) return;
+                if (status.hasFullInternet()) {
+                    // No confirmation dialog or web page: tap-to-disconnect is direct.
+                    startMonitor(MonitorService.ACTION_LOGOUT);
+                    setStatusUi();
+                } else if (status.state == PaidInternetProbe.State.NO_WIFI) {
+                    new AlertDialog.Builder(this)
+                            .setMessage("Connect your phone to the ship's Wi-Fi before signing in.")
+                            .setPositiveButton("OK", null).show();
+                } else {
+                    // The user signs in ONLY in their normal browser: never inside our WebView.
+                    openOfficialLogin();
                 }
-            }
-            @Override public void onStartTrackingTouch(SeekBar sb) {}
-            @Override public void onStopTrackingTouch(SeekBar sb) {}
-        });
-        content.addView(timerCard);
-        space(content, 22);
-
-        LinearLayout whatsappCard = card();
-        Switch whats = toggle(prefs.getBoolean("auto_whatsapp", true));
-        addSettingRow(whatsappCard, "◉", "Free WhatsApp Text",
-                "Activate automatically after logout", whats);
-        whats.setOnCheckedChangeListener((v, checked) ->
-                prefs.edit().putBoolean("auto_whatsapp", checked).apply());
-        content.addView(whatsappCard);
-        space(content, 16);
-        content.addView(text("When both disconnect options are on, whichever happens first " +
-                "requests logout. Android may delay an alarm while sleeping.", 11, MUTED, false));
-        space(content, 12);
-        content.addView(text("Automatic WhatsApp portal steps run when Crew Connect is visible. " +
-                "After screen-lock logout, unlock the app to finish activation.", 11, MUTED, false));
+            });
+        }, "CrewWifiButtonCheck").start();
     }
-    private void addSettingRow(LinearLayout host, String glyph, String name, String subtitle, Switch toggle) {
-        LinearLayout r = row();
-        if ("Free WhatsApp Text".equals(name)) {
-            r.addView(new MessageIcon(), new LinearLayout.LayoutParams(dp(34), dp(34)));
+    private void openOfficialLogin() {
+        Intent browser = new Intent(Intent.ACTION_VIEW, Uri.parse(PORTAL));
+        browser.addCategory(Intent.CATEGORY_BROWSABLE);
+        try { startActivity(browser); }
+        catch (ActivityNotFoundException e) {
+            Toast.makeText(this, "No browser available to open onboard iCafe", Toast.LENGTH_LONG).show();
+        }
+    }
+    private void updateMonitor() {
+        boolean keepRunning = prefs.getBoolean("screen_lock", true) ||
+                prefs.getBoolean("timed_disconnect", false);
+        Intent intent = new Intent(this, MonitorService.class);
+        if (keepRunning) {
+            try { startForegroundService(intent); }
+            catch (Exception e) {
+                Toast.makeText(this, "Android blocked automatic logout monitoring", Toast.LENGTH_LONG).show();
+            }
         } else {
-            TextView icon = text(glyph, 23, MUTED, false);
-            icon.setGravity(Gravity.CENTER);
-            r.addView(icon, new LinearLayout.LayoutParams(dp(34), -2));
+            intent.setAction(MonitorService.ACTION_STOP);
+            try { startService(intent); } catch (Exception ignored) { stopService(intent); }
         }
-        LinearLayout labels = column(); labels.setPadding(dp(8), 0, dp(8), 0);
-        labels.addView(text(name, 13, WHITE, true)); space(labels, 6);
-        labels.addView(text(subtitle, 11, MUTED, false));
-        r.addView(labels, new LinearLayout.LayoutParams(0, -2, 1f));
-        r.addView(toggle);
-        host.addView(r);
-    }
-
-    private EditText field(String hint, boolean secret) {
-        EditText input = new EditText(this);
-        input.setSingleLine(true); input.setTextColor(WHITE);
-        input.setHintTextColor(MUTED); input.setTextSize(14);
-        input.setPadding(dp(12), 0, dp(10), 0);
-        input.setHint(hint); input.setBackground(outlined(INNER, 10));
-        input.setInputType(secret ? InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD :
-                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_NORMAL);
-        input.setImeOptions(secret ? EditorInfo.IME_ACTION_DONE : EditorInfo.IME_ACTION_NEXT);
-        return input;
-    }
-    private GradientDrawable errorOutlined(int color, int radius) {
-        GradientDrawable gd = rounded(color, radius);
-        gd.setStroke(dp(1), Color.rgb(229, 104, 110));
-        return gd;
-    }
-    private void clearAccountError() {
-        if (accountError.isEmpty()) return;
-        accountError = "";
-        if (accountErrorView != null) accountErrorView.setVisibility(View.GONE);
-        if (accountUserField != null) accountUserField.setBackground(outlined(INNER, 10));
-        if (accountPinField != null) accountPinField.setBackground(outlined(INNER, 10));
-    }
-    private void buildAccount() {
-        space(content, 13);
-        content.addView(text("Internet Account", 21, WHITE, true));
-        space(content, 9);
-        content.addView(text("Sign in securely through onboard iCafe.", 12, MUTED, false));
-        space(content, 25);
-        LinearLayout card = card();
-        LinearLayout fields = row();
-        LinearLayout userCol = column();
-        userCol.addView(text("Username", 11, MUTED, false)); space(userCol, 9);
-        EditText user = field("Username", false);
-        user.setText(accountUsername);
-        accountUserField = user;
-        if (!accountError.isEmpty()) user.setBackground(errorOutlined(INNER, 10));
-        user.addTextChangedListener(new ShortTextWatcher() {
-            @Override public void afterTextChanged(Editable e) {
-                accountUsername = e.toString();
-                clearAccountError();
-            }
-        });
-        userCol.addView(user, new LinearLayout.LayoutParams(-1, dp(44)));
-        fields.addView(userCol, new LinearLayout.LayoutParams(0, -2, 1f));
-        LinearLayout pinCol = column(); pinCol.setPadding(dp(10), 0, 0, 0);
-        pinCol.addView(text("PIN", 11, MUTED, false)); space(pinCol, 9);
-        EditText pin = field("PIN", true);
-        pin.setText(accountPin);
-        accountPinField = pin;
-        if (!accountError.isEmpty()) pin.setBackground(errorOutlined(INNER, 10));
-        pin.addTextChangedListener(new ShortTextWatcher() {
-            @Override public void afterTextChanged(Editable e) {
-                accountPin = e.toString();
-                clearAccountError();
-            }
-        });
-        pinCol.addView(pin, new LinearLayout.LayoutParams(-1, dp(44)));
-        fields.addView(pinCol, new LinearLayout.LayoutParams(0, -2, 1f));
-        card.addView(fields);
-        if (!accountError.isEmpty()) {
-            space(card, 10);
-            accountErrorView = text(accountError, 12, Color.rgb(255, 145, 148), false);
-            accountErrorView.setContentDescription("Sign-in error: " + accountError);
-            card.addView(accountErrorView);
-        }
-        space(card, 20);
-        Button sign = button("Sign In to Internet", WHITE, BG, 49);
-        sign.setOnClickListener(v -> {
-            if (accountUsername.trim().isEmpty() || accountPin.isEmpty()) {
-                new AlertDialog.Builder(this).setMessage("Enter your username and PIN first.")
-                        .setPositiveButton("OK", null).show();
-                return;
-            }
-            clearAccountError();
-            Intent i = new Intent(this, PortalLoginActivity.class);
-            i.putExtra(PortalLoginActivity.EXTRA_USER, accountUsername.trim());
-            i.putExtra(PortalLoginActivity.EXTRA_PIN, accountPin);
-            accountPin = ""; pin.setText("");
-            startActivityForResult(i, 260);
-        });
-        card.addView(sign);
-        space(card, 13);
-        card.addView(text("Your PIN is never saved. The official portal will show your existing " +
-                "packages so you can choose one. Purchases are not automatic.", 11, MUTED, false));
-        content.addView(card);
-        space(content, 18);
-        LinearLayout info = card();
-        info.addView(text("Your Internet Packages", 14, WHITE, true));
-        space(info, 10);
-        info.addView(text("Your purchased packages appear on the live portal after you sign in. " +
-                "Select one and tap Log in to activate it.", 12, MUTED, false));
-        space(info, 11);
-        TextView current = text("Active plan: " +
-                (connected() ? prefs.getString("active_package", "Internet") : "None"), 12, WHITE, false);
-        info.addView(current);
-        content.addView(info);
-        space(content, 20);
-        Button free = button("Activate Free WhatsApp Text", INNER, WHITE, 45);
-        free.setOnClickListener(v -> launchFreePortal(false));
-        content.addView(free);
-    }
-
-    private abstract static class ShortTextWatcher implements TextWatcher {
-        @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
-        @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
-    }
-    private static String formatDuration(int sec) {
-        return String.format(Locale.US, "%02d:%02d", sec / 60, sec % 60);
-    }
-    private static String formatElapsed(long sec) {
-        return String.format(Locale.US, "%02d:%02d:%02d", sec / 3600, (sec / 60) % 60, sec % 60);
-    }
-    private void updateSessionText() {
-        if (statusView == null) return;
-        boolean active = connected();
-        if (homeRenderedConnected != active) {
-            showTab("home");
-            return;
-        }
-        String state = prefs.getString("connection_status", "offline");
-        wifiCircle.setConnected(active);
-        if (elapsedLabelView != null) {
-            boolean detected = "detected".equals(prefs.getString("session_start_source", ""));
-            elapsedLabelView.setText(active && detected ? "Since detected" : "Session elapsed");
-        }
-        if (active) {
-            statusView.setText("INTERNET ACTIVE");
-            String svc = prefs.getString("active_package", "");
-            statusDetailView.setText(svc.isEmpty() ? "Connected to internet" : svc);
-            long start = prefs.getLong("session_started_elapsed", -1L);
-            long now = SystemClock.elapsedRealtime();
-            long spent = (start >= 0 && start <= now) ? (now - start) / 1000L : 0L;
-            elapsedView.setText(formatElapsed(spent));
-            int balance = prefs.getInt("reported_remaining_seconds", -1);
-            remainingView.setText(balance < 0 ? "—" : formatDuration(Math.max(0, balance - (int)spent)));
-        } else {
-            if ("unknown".equals(state) || "checking".equals(state)) {
-                statusView.setText("CHECKING CONNECTION");
-                statusDetailView.setText("Paid internet status could not be verified");
-            } else if ("logging_out".equals(state)) {
-                statusView.setText("DISCONNECTING");
-                statusDetailView.setText("Checking paid internet logout…");
-            } else {
-                statusView.setText("INTERNET OFFLINE");
-                statusDetailView.setText("Paid internet not detected");
-            }
-            elapsedView.setText("00:00:00");
-            remainingView.setText("—");
-        }
-    }
-    private void confirmLogout() {
-        new AlertDialog.Builder(this)
-                .setTitle("Disconnect paid internet?")
-                .setMessage("Crew Connect will request logout. If enabled, it will then " +
-                        "start Free WhatsApp Text activation while the app is open.")
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("Disconnect", (dlg, which) -> startMonitor(MonitorService.ACTION_LOGOUT))
-                .show();
-    }
-    private void launchFreePortal(boolean automatic) {
-        if (portalOpening) return;
-        portalOpening = true;
-        Intent i = new Intent(this, FreeWhatsAppTestActivity.class);
-        i.putExtra(FreeWhatsAppTestActivity.EXTRA_AUTOSTART, automatic);
-        i.putExtra(FreeWhatsAppTestActivity.EXTRA_RETURN_ON_COMPLETE, automatic);
-        startActivity(i);
-    }
-    private void maybeLaunchFreePortal() {
-        if (portalOpening || !prefs.getBoolean("auto_whatsapp", true)
-                || !prefs.getBoolean("logout_pending_whatsapp", false)) return;
-        prefs.edit().putBoolean("logout_pending_whatsapp", false).apply();
-        launchFreePortal(true);
+        SessionLogoutAlarm.update(this);
     }
     private void startMonitor(String action) {
-        Intent i = new Intent(this, MonitorService.class);
-        if (action != null) i.setAction(action);
-        try { startForegroundService(i); }
+        Intent intent = new Intent(this, MonitorService.class);
+        intent.setAction(action);
+        try { startForegroundService(intent); }
         catch (Exception e) {
-            new AlertDialog.Builder(this).setTitle("Unable to start Crew Connect")
-                    .setMessage("Android blocked the background service. Check notification settings.")
-                    .setPositiveButton("OK", null).show();
+            uiBusy = false; setStatusUi();
+            Toast.makeText(this, "Unable to start logout. Try again.", Toast.LENGTH_LONG).show();
         }
     }
-    private void requestNotificationPermission() {
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS")
-                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+    private void requestExactAlarmPermission() {
+        if (Build.VERSION.SDK_INT < 31) return;
+        AlarmManager manager = (AlarmManager)getSystemService(ALARM_SERVICE);
+        if (manager == null || manager.canScheduleExactAlarms()) return;
+        new AlertDialog.Builder(this)
+                .setTitle("Allow precise logout timers")
+                .setMessage("Android can delay timers without Alarms & reminders permission. You can enable it in Settings.")
+                .setNegativeButton("Later", null)
+                .setPositiveButton("Settings", (dialog, id) -> {
+                    Intent intent = new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
+                    intent.setData(Uri.parse("package:" + getPackageName()));
+                    try { startActivity(intent); } catch (Exception ignored) {}
+                }).show();
+    }
+    private void requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+                checkSelfPermission("android.permission.POST_NOTIFICATIONS") !=
+                        android.content.pm.PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 5);
         }
     }
-    private void requestExactAlarm() {
-        if (Build.VERSION.SDK_INT < 31 || promptShown) return;
-        AlarmManager am = (AlarmManager)getSystemService(ALARM_SERVICE);
-        if (am == null || am.canScheduleExactAlarms()) return;
-        promptShown = true;
-        new AlertDialog.Builder(this).setTitle("Allow precise disconnect times")
-                .setMessage("Allow Alarms & reminders for accurate short timers. " +
-                        "Without it, Android may delay a logout.")
-                .setNegativeButton("Later", null)
-                .setPositiveButton("Settings", (dialog, which) -> {
-                    Intent i = new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
-                    i.setData(android.net.Uri.parse("package:" + getPackageName()));
-                    try { startActivity(i); }
-                    catch (Exception ignored) {}
+    private void showSettings() {
+        String[] options = {"Activate Free WhatsApp Text manually", "Toggle auto WhatsApp activation",
+                "About & privacy"};
+        new AlertDialog.Builder(this).setTitle("Crew Connect settings")
+                .setItems(options, (d, option) -> {
+                    if (option == 0) {
+                        Intent intent = new Intent(this, FreeWhatsAppTestActivity.class);
+                        intent.putExtra(FreeWhatsAppTestActivity.EXTRA_AUTOSTART, true);
+                        startActivity(intent);
+                    } else if (option == 1) {
+                        boolean enabled = !prefs.getBoolean("auto_whatsapp", true);
+                        prefs.edit().putBoolean("auto_whatsapp", enabled).apply();
+                        Toast.makeText(this, "Free WhatsApp after logout: " +
+                                (enabled ? "On" : "Off"), Toast.LENGTH_SHORT).show();
+                    } else {
+                        new AlertDialog.Builder(this).setTitle("Crew Connect · v2.7")
+                                .setMessage("Sign-in happens exclusively in your phone's browser at onboardicafe.com. " +
+                                        "Crew Connect never asks for or stores your internet username or PIN. " +
+                                        "Connectivity checks cannot guarantee your account balance, " +
+                                        "and Android may delay background actions. Not an official cruise-line app.")
+                                .setPositiveButton("OK", null).show();
+                    }
                 }).show();
     }
-    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == 260) {
-            accountPin = "";
-            if (resultCode == RESULT_OK) {
-                accountError = "";
-                showTab("home");
-            } else if (data != null && data.hasExtra(PortalLoginActivity.EXTRA_LOGIN_ERROR)) {
-                String code = data.getStringExtra(PortalLoginActivity.EXTRA_LOGIN_ERROR);
-                if (PortalLoginActivity.ERROR_INVALID_PIN.equals(code)) {
-                    accountError = "Invalid PIN entered. Please check your details and try again.";
-                } else if (PortalLoginActivity.ERROR_INVALID_USERNAME.equals(code)) {
-                    accountError = "Username not recognized. Please check it and try again.";
-                } else {
-                    accountError = "Incorrect username or PIN. Please try again.";
-                }
-                // Keep the username for correction, but never retain the PIN.
-                showTab("account");
-            }
-        }
-    }
-    private void refreshPaidConnection() {
-        if (!connectionCheckRunning.compareAndSet(false, true)) return;
-        if (!prefs.getBoolean("logout_in_progress", false) && !connected()) {
-            prefs.edit().putString("connection_status", "checking").apply();
-        }
+    private void refreshConnection() {
+        if (!busy.compareAndSet(false, true)) return;
+        uiBusy = true;
+        setStatusUi();
         new Thread(() -> {
-            try {
-                PaidInternetProbe.Result result = PaidInternetProbe.checkWithRetry(this);
+            PaidInternetProbe.Result result = PaidInternetProbe.checkWithRetry(this);
+            if (!prefs.getBoolean("logout_in_progress", false))
                 PaidInternetProbe.updateOnAppOpen(this, result);
-                handler.post(() -> {
-                    if (!isFinishing() && content != null && "home".equals(selectedTab))
-                        showTab("home");
-                });
-            } finally {
-                connectionCheckRunning.set(false);
-            }
-        }, "CrewWiFiStatusCheck").start();
+            ui.post(() -> {
+                busy.set(false);
+                uiBusy = false;
+                if (!isFinishing() && !isDestroyed()) setStatusUi();
+            });
+        }, "CrewWifiResumeProbe").start();
     }
-
+    private final Runnable statusTicker = new Runnable() {
+        @Override public void run() {
+            setStatusUi();
+            if (!prefs.getBoolean("logout_in_progress", false)) maybeStartFreeWhatsApp();
+            ui.postDelayed(this, 1300);
+        }
+    };
+    private boolean launchedActivation = false;
+    private void maybeStartFreeWhatsApp() {
+        if (launchedActivation || !prefs.getBoolean("auto_whatsapp", true)
+                || !prefs.getBoolean("logout_pending_whatsapp", false)) return;
+        launchedActivation = true;
+        prefs.edit().putBoolean("logout_pending_whatsapp", false).apply();
+        Intent portal = new Intent(this, FreeWhatsAppTestActivity.class);
+        portal.putExtra(FreeWhatsAppTestActivity.EXTRA_AUTOSTART, true);
+        portal.putExtra(FreeWhatsAppTestActivity.EXTRA_RETURN_ON_COMPLETE, true);
+        startActivity(portal);
+    }
     @Override protected void onResume() {
         super.onResume();
-        portalOpening = false;
-        if (prefs.getBoolean("timed_disconnect", false)) requestExactAlarm();
+        launchedActivation = false;
         SessionLogoutAlarm.update(this);
-        if (content != null) showTab(selectedTab);
-        handler.removeCallbacks(refresh);
-        handler.postDelayed(refresh, 300);
-        refreshPaidConnection();
+        ui.removeCallbacks(statusTicker);
+        ui.post(statusTicker);
+        // Finish a pending free-app activation when Android lets the app be visible.
+        if (!prefs.getBoolean("logout_in_progress", false)) maybeStartFreeWhatsApp();
+        refreshConnection(); // Recheck after returning from official browser login.
     }
     @Override protected void onPause() {
-        handler.removeCallbacks(refresh);
+        ui.removeCallbacks(statusTicker);
         super.onPause();
     }
-
-    /** Compact line-icons for bottom navigation, without emoji or external images. */
-    private class NavIcon extends View {
-        private final Paint pen = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final String kind;
-        private final boolean selected;
-        NavIcon(String kind, boolean selected) {
-            super(MainActivity.this);
-            this.kind = kind; this.selected = selected;
-        }
-        @Override protected void onDraw(Canvas c) {
-            float unit = Math.min(getWidth(), getHeight()) / 28f;
-            c.save(); c.translate((getWidth() - unit*28f)/2f, (getHeight() - unit*28f)/2f);
-            c.scale(unit, unit);
-            pen.setColor(selected ? WHITE : MUTED);
-            pen.setStrokeWidth(1.9f); pen.setStrokeCap(Paint.Cap.ROUND);
-            pen.setStrokeJoin(Paint.Join.ROUND);
-            pen.setStyle(Paint.Style.STROKE);
-            if ("home".equals(kind)) {
-                c.drawLine(4,13,14,5,pen); c.drawLine(14,5,24,13,pen);
-                c.drawLine(7,12,7,24,pen); c.drawLine(21,12,21,24,pen);
-                c.drawLine(7,24,21,24,pen); c.drawLine(12,24,12,17,pen); c.drawLine(12,17,16,17,pen);
-                c.drawLine(16,17,16,24,pen);
-            } else if ("automation".equals(kind)) {
-                c.drawLine(4,7,24,7,pen); c.drawLine(4,14,24,14,pen);
-                c.drawLine(4,21,24,21,pen);
-                pen.setStyle(Paint.Style.FILL);
-                pen.setColor(BG); c.drawCircle(11,7,3.5f,pen); c.drawCircle(19,14,3.5f,pen);
-                c.drawCircle(9,21,3.5f,pen);
-                pen.setStyle(Paint.Style.STROKE); pen.setColor(selected ? WHITE : MUTED);
-                c.drawCircle(11,7,3.5f,pen); c.drawCircle(19,14,3.5f,pen);
-                c.drawCircle(9,21,3.5f,pen);
-            } else {
-                c.drawCircle(14,9,4.5f,pen);
-                c.drawArc(5,15,23,27,180,180,false,pen);
-            }
-            c.restore();
-        }
+    @Override protected void onDestroy() {
+        ui.removeCallbacksAndMessages(null);
+        super.onDestroy();
     }
 
-    /** Generic green text-message icon, inspired by free texting functionality. */
-    private class MessageIcon extends View {
-        private final Paint pen = new Paint(Paint.ANTI_ALIAS_FLAG);
-        MessageIcon() { super(MainActivity.this); }
-        @Override protected void onDraw(Canvas c) {
-            float x = getWidth()/2f, y = getHeight()/2f;
-            float r = Math.min(getWidth(), getHeight()) * 0.37f;
-            pen.setStyle(Paint.Style.STROKE); pen.setStrokeWidth(dp(2.4f));
-            pen.setStrokeCap(Paint.Cap.ROUND); pen.setColor(GREEN);
-            c.drawCircle(x,y,r,pen);
-            c.drawLine(x-r*0.65f,y+r*0.72f,x-r*0.90f,y+r*1.2f,pen);
-            c.drawLine(x-r*0.90f,y+r*1.2f,x-r*0.25f,y+r*0.94f,pen);
-            c.drawArc(x-r*0.33f,y-r*0.42f,x+r*0.38f,y+r*0.42f,145,130,false,pen);
-        }
-    }
-
-    private class WifiCircle extends View {
+    /** Smaller tactile Wi-Fi button: thin icon, restrained bevel and short shadow. */
+    private final class WifiButton extends View {
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private boolean active;
-        WifiCircle() { super(MainActivity.this); }
-        void setConnected(boolean on) { active = on; invalidate(); }
-        @Override protected void onDraw(Canvas c) {
-            super.onDraw(c);
-            float cx = getWidth()/2f, cy = getHeight()/2f;
-            float r = Math.min(getWidth(), getHeight()) * 0.43f;
-            p.setStyle(Paint.Style.STROKE);
-            p.setStrokeWidth(dp(8)); p.setStrokeCap(Paint.Cap.ROUND);
-            p.setColor(active ? Color.rgb(26, 81, 62) : Color.rgb(41, 62, 83));
-            c.drawCircle(cx, cy, r, p);
-            if (active) {
-                p.setColor(GREEN);
-                c.drawArc(new RectF(cx-r,cy-r,cx+r,cy+r), -112, 292, false, p);
-            }
-            p.setStrokeWidth(dp(6)); p.setColor(active ? GREEN : Color.rgb(174, 193, 211));
-            float ar = r*0.49f;
-            c.drawArc(new RectF(cx-ar,cy-ar*0.38f,cx+ar,cy+ar*1.62f), 227, 86, false, p);
-            ar *= 0.55f;
-            c.drawArc(new RectF(cx-ar,cy+ar*0.1f,cx+ar,cy+ar*2.1f), 227, 86, false, p);
+        private int state; // 0=offline, 1=checking, 2=connected
+        WifiButton() { super(MainActivity.this); setLayerType(View.LAYER_TYPE_SOFTWARE, null); }
+        void setState(int next) { state = next; invalidate(); }
+        @Override protected void onDraw(Canvas canvas) {
+            float cx=getWidth()/2f, cy=getHeight()/2f;
+            float radius=Math.min(getWidth(),getHeight())*.42f;
             p.setStyle(Paint.Style.FILL);
-            c.drawCircle(cx, cy+r*0.34f, dp(4), p);
+            p.setColor(BUTTON);
+            p.setShadowLayer(dp(8), 0, dp(5), Color.argb(105,0,0,0));
+            canvas.drawCircle(cx,cy,radius,p);
+            p.clearShadowLayer();
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(dp(1.1f));
+            p.setColor(state==2 ? Color.rgb(219,223,226) : Color.rgb(71,75,79));
+            canvas.drawCircle(cx,cy,radius,p);
+            p.setStrokeWidth(dp(0.65f));
+            p.setColor(Color.rgb(98,102,106));
+            canvas.drawArc(new RectF(cx-radius+dp(3),cy-radius+dp(3),cx+radius-dp(3),cy+radius-dp(3)),
+                    212,110,false,p);
+            if (state==1) {
+                p.setColor(WHITE);
+                p.setStrokeWidth(dp(2.2f));
+                canvas.drawArc(new RectF(cx-radius-dp(1),cy-radius-dp(1),cx+radius+dp(1),cy+radius+dp(1)),
+                        270,100,false,p);
+            }
+            // Three thin arcs create a recognizable Wi-Fi symbol without filling the circle.
+            p.setColor(WHITE);
+            p.setStrokeCap(Paint.Cap.ROUND);
+            p.setStrokeWidth(dp(2.0f));
+            for (int i=0; i<3; i++) {
+                float w=radius*(0.52f-i*.15f);
+                float centerY=cy+dp(6);
+                canvas.drawArc(new RectF(cx-w,centerY-w*.45f,cx+w,centerY+w*.75f),
+                        218,104,false,p);
+            }
+            p.setStyle(Paint.Style.FILL);
+            canvas.drawCircle(cx,cy+radius*.28f,dp(1.7f),p);
         }
     }
 }

@@ -16,11 +16,14 @@ public class SessionLogoutReceiver extends BroadcastReceiver {
         long start = prefs.getLong("session_started_elapsed", -1L);
         long now = SystemClock.elapsedRealtime();
         if (start < 0 || now < start) return;
-        int seconds = Math.max(30, Math.min(900, prefs.getInt("timed_seconds", 300)));
+        if (prefs.getLong("logout_timer_fired_session", -1L) == start) return;
+        int seconds = Math.max(1, Math.min(86399, prefs.getInt("timed_seconds", 300)));
         if (now - start + 1500L < seconds * 1000L) {
             SessionLogoutAlarm.update(c); // An early/inexact alarm; try again.
             return;
         }
+        // One timed logout attempt per session; rearmed when a new session starts.
+        prefs.edit().putLong("logout_timer_fired_session", start).apply();
         Intent service = new Intent(c, MonitorService.class).setAction(MonitorService.ACTION_AUTO_LOGOUT);
         try { c.startForegroundService(service); }
         catch (Exception e) {

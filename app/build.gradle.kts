@@ -6,7 +6,7 @@ android {
         applicationId = "com.crewwifisaver.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 9
-        versionName = "2.6-beta2-smart-connection"
+        versionCode = 11
+        versionName = "2.7-beta1-minimal"
     }
 }

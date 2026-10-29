@@ -1,14 +1,28 @@
-# Crew WiFi Saver — v1.0 traffic baseline prototype
+# Crew Connect v2.7 Beta 1 — Minimal Home + Private Browser Login
 
-This is a deliberately limited Android test app. It displays **total device network traffic** (received + sent bytes per minute), sampled while the activity is visible. It does **not** measure Wi-Fi-only traffic, detect login state, monitor when locked, log out, or implement an idle threshold. Those require separate design, permissions and on-device validation. It does not ask for ship account credentials.
+An experimental Android application for users of a cruise-ship Wi-Fi captive portal.
 
-## Build entirely from your Android phone (GitHub)
-1. Sign in to GitHub in your phone browser and create a new **private** repository.
-2. Upload the contents of this ZIP into the repository, keeping `.github/workflows/android.yml` and the folder structure. GitHub's browser uploader may hide dotfolders on some file managers; verify the workflow exists. Alternatively use a phone-based Git client that can import a ZIP and push a repository.
-3. Open the repository's **Actions** tab, choose **Build Android APK**, and tap **Run workflow** (or push to `main`).
-4. Once the build succeeds, open its run page, download the `CrewWiFiSaver-debug-apk` artifact ZIP, extract `app-debug.apk`, and install it. Android may require granting your browser/file manager permission to install unknown apps.
-5. Connect to the ship Wi-Fi and log in as normal. Open the app and observe idle vs active traffic. Do not rely on this prototype to save minutes.
+## What's new
 
-**Privacy:** The source can be inspected before building. The current code never accesses usernames/passwords and makes no network requests of its own.
+- **Single, raised Wi-Fi action button.** Tap while offline to open the official `https://onboardicafe.com/` login page in your **regular browser**. After signing in and selecting a package there, return to Crew Connect; its ship-Wi-Fi-specific connectivity probe refreshes the button state.
+- **Tap while connected** to request paid internet logout through the existing onboard logout endpoint, then verify the change in general internet access. The app does not open a browser just to log out.
+- **No in-app username, PIN, or package-purchase fields.** The entire credential-collecting activity was removed from the source and Android manifest.
+- **Minimal monochrome screen:** dark background, thin Wi-Fi icon, gentle raised-button shadow, no elapsed-session timer.
+- **Two settings beneath the Wi-Fi button:** "Auto logout when phone is locked" and "Auto logout timer".
+- **Native scrolling wheel timer:** hours (0–23), minutes (0–59), seconds (0–59). Appears only when the timer is enabled. Defaults to `00:05:00`, forbids zero length; runs once per paid internet session, regardless of activity.
+- **Free WhatsApp Text:** preserves the existing verified two-button portal flow. After a verified paid logout, the free-app WebView flow starts when Android permits Crew Connect to display it; background/locked-screen completion is not guaranteed. A manual activation shortcut is available from the Settings gear.
+- **Remaining minutes only:** shows a portal-reported balance if one exists. When sign-in uses the external browser, Crew Connect cannot read the browser's private account page and does not invent remaining minutes.
 
-**Important:** Device-wide traffic counters include cellular and other interfaces, and may behave differently across Android versions. For production, evaluate Android `VpnService` for network traffic classification and a foreground service for locked-screen monitoring. A VPN can conflict with ship connectivity, so test carefully. Logout endpoint behavior must be validated with the actual captive portal.
+## Status reliability and device limitations
+
+- Uses a lightweight `https://connectivitycheck.gstatic.com/generate_204` request **bound to Wi-Fi**, never cell data, to indicate general internet access. HTTP 204 is not authoritative proof of paid account entitlement. Network failures and inaccessible test servers can result in **Checking** or **Unknown**.
+- The app does not attempt automatic paid logout when general internet access is not confirmed. After logout it verifies the change in connectivity before showing a tentative result.
+- Logging in launches the **default browser** for privacy. Since the official portal has no known return-to-app callback, the browser may not automatically close; the user may need to return to Crew Connect manually.
+- Android may defer background timers unless the user grants precise alarm permissions. A foreground notification may be required to monitor screen lock. Some Android versions and manufacturers restrict this behavior.
+- Screenshots and status indicators should not be interpreted as authoritative minute billing, purchase status, or guaranteed WhatsApp activation.
+
+## Build
+
+Use the provided GitHub Actions workflow (`Actions` → `Build Android APK` → `Run workflow`) on a fresh branch, or compile with Gradle and Android SDK 35. The debug artifact is named `CrewConnect-v2.7-beta1-debug-apk`. Application ID remains `com.crewwifisaver.app` so it can update the installed app; app display name is `Crew Connect`.
+
+Do not install or distribute widely until the new flow has passed tests on the actual shipboard network. Preserve your previously working branch.

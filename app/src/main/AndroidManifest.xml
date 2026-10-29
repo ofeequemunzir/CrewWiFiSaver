@@ -25,10 +25,6 @@
         </activity>
 
         <activity
-            android:name=".PortalLoginActivity"
-            android:exported="false"/>
-
-        <activity
             android:name=".FreeWhatsAppTestActivity"
             android:exported="false"/>
 
