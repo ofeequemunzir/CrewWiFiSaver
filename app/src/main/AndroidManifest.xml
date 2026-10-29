@@ -39,5 +39,17 @@
 
         <receiver android:name=".LogoutAlarmReceiver" android:exported="false"/>
         <receiver android:name=".SessionLogoutReceiver" android:exported="false"/>
-    </application>
+
+        <receiver
+            android:name=".CrewWidgetProvider"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/crew_widget_info"/>
+        </receiver>
+
+</application>
 </manifest>
