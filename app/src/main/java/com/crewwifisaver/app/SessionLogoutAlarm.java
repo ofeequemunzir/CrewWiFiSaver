@@ -26,11 +26,12 @@ public final class SessionLogoutAlarm {
         SharedPreferences prefs = c.getSharedPreferences("prefs", Context.MODE_PRIVATE);
         if (!prefs.getBoolean("timed_disconnect", false)
                 || !prefs.getBoolean("session_active", false)) return;
-        long start = prefs.getLong("session_started_elapsed", -1L);
+        long session = prefs.getLong("session_started_elapsed", -1L);
+        long start = prefs.getLong("timer_started_elapsed", -1L);
         long now = SystemClock.elapsedRealtime();
-        if (start < 0 || start > now) return; // Clock reset or old session after device reboot.
+        if (start < 0 || start > now || session < 0 || session != prefs.getLong("timer_session", -1L)) return; // Clock reset or old session after device reboot.
         // No repeated attempts for the same paid internet session.
-        if (prefs.getLong("logout_timer_fired_session", -1L) == start) return;
+        if (prefs.getLong("logout_timer_fired_session", -1L) == session) return;
         int seconds = Math.min(86399, Math.max(1, prefs.getInt("timed_seconds", 300)));
         long when = Math.max(now + 1000L, start + seconds * 1000L);
         if (Build.VERSION.SDK_INT >= 31 && !manager.canScheduleExactAlarms()) {

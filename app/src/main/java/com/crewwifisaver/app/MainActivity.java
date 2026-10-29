@@ -20,6 +20,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
+import android.widget.Button;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
@@ -56,6 +58,11 @@ public class MainActivity extends Activity {
     private NumberPicker hourPicker;
     private NumberPicker minutePicker;
     private NumberPicker secondPicker;
+    private TextView timerCountdown;
+    private View timerTitles;
+    private View timerWheels;
+    private View timerHint;
+    private Button timerAction;
     private boolean savingWheels = false;
     private boolean uiBusy = false;
     private boolean manualLogoutRequested = false;
@@ -198,6 +205,7 @@ public class MainActivity extends Activity {
         wheelContainer.setPadding(dp(10), dp(13), dp(10), dp(10));
         initWheels(wheelContainer);
         wheelContainer.setVisibility(timer.isChecked() ? View.VISIBLE : View.GONE);
+        renderTimerUi();
         rootContent.addView(wheelContainer);
         timer.setOnCheckedChangeListener((v, checked) -> {
             wheelContainer.setVisibility(checked ? View.VISIBLE : View.GONE);
@@ -205,7 +213,10 @@ public class MainActivity extends Activity {
                 prefs.edit().putInt("timed_seconds", 300).apply();
                 setWheelValues(300);
             }
-            prefs.edit().putBoolean("timed_disconnect", checked).apply();
+            SharedPreferences.Editor timerEdit = prefs.edit().putBoolean("timed_disconnect", checked);
+            if (!checked) timerEdit.putLong("timer_started_elapsed", -1L).putLong("timer_session", -1L);
+            timerEdit.apply();
+            renderTimerUi();
             SessionLogoutAlarm.update(this);
             updateMonitor();
             if (checked) { requestExactAlarmPermission(); requestNotificationPermissionIfNeeded(); }
@@ -263,12 +274,14 @@ public class MainActivity extends Activity {
             title.setGravity(Gravity.CENTER);
             titles.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
         }
+        timerTitles = titles;
         host.addView(titles);
         space(host, 6);
         LinearLayout wheels = row();
         for (NumberPicker picker : new NumberPicker[]{hourPicker, minutePicker, secondPicker}) {
             wheels.addView(picker, new LinearLayout.LayoutParams(0, dp(134), 1f));
         }
+        timerWheels = wheels;
         host.addView(wheels);
         NumberPicker.OnValueChangeListener onChange = (p, prev, value) -> persistTimerPicker();
         hourPicker.setOnValueChangedListener(onChange);
@@ -276,7 +289,60 @@ public class MainActivity extends Activity {
         secondPicker.setOnValueChangedListener(onChange);
         TextView note = label("Scroll each column to set the logout time", 11, MUTED, false);
         note.setGravity(Gravity.CENTER);
+        timerHint = note;
         host.addView(note);
+        space(host, 10);
+        timerCountdown = label("", 22, WHITE, true);
+        timerCountdown.setGravity(Gravity.CENTER);
+        host.addView(timerCountdown);
+        space(host, 9);
+        timerAction = new Button(this);
+        timerAction.setAllCaps(false);
+        timerAction.setTextColor(WHITE);
+        timerAction.setTextSize(13);
+        timerAction.setBackground(background(Color.rgb(57, 61, 65), 12));
+        timerAction.setOnClickListener(v -> {
+            if (isTimerRunning()) {
+                prefs.edit().putLong("timer_started_elapsed", -1L)
+                        .putLong("timer_session", -1L).apply();
+                SessionLogoutAlarm.cancel(this);
+            } else {
+                if (!prefs.getBoolean("session_active", false)
+                        || !"connected".equals(prefs.getString("connection_status", ""))) {
+                    Toast.makeText(this, "Connect paid internet before starting the timer", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                prefs.edit().putLong("timer_started_elapsed", SystemClock.elapsedRealtime())
+                        .putLong("timer_session", prefs.getLong("session_started_elapsed", -1L)).apply();
+                requestExactAlarmPermission();
+                requestNotificationPermissionIfNeeded();
+                SessionLogoutAlarm.update(this);
+            }
+            renderTimerUi();
+        });
+        host.addView(timerAction, new LinearLayout.LayoutParams(-1, dp(44)));
+    }
+    private boolean isTimerRunning() {
+        long start = prefs.getLong("timer_started_elapsed", -1L);
+        long session = prefs.getLong("session_started_elapsed", -1L);
+        return prefs.getBoolean("timed_disconnect", false) && prefs.getBoolean("session_active", false)
+                && start >= 0 && start <= SystemClock.elapsedRealtime()
+                && session >= 0 && session == prefs.getLong("timer_session", -1L)
+                && prefs.getLong("logout_timer_fired_session", -1L) != session;
+    }
+    private void renderTimerUi() {
+        if (timerAction == null || timerCountdown == null || hourPicker == null) return;
+        boolean running = isTimerRunning();
+        for (View part : new View[]{timerTitles, timerWheels, timerHint})
+            if (part != null) part.setVisibility(running ? View.GONE : View.VISIBLE);
+        timerAction.setText(running ? "Cancel Timer" : "Start Timer");
+        if (running) {
+            long start = prefs.getLong("timer_started_elapsed", -1L);
+            long elapsed = Math.max(0, (SystemClock.elapsedRealtime() - start) / 1000L);
+            long remaining = Math.max(0, prefs.getInt("timed_seconds", 300) - elapsed);
+            timerCountdown.setText(String.format(Locale.US, "%02d:%02d:%02d",
+                    remaining/3600, (remaining/60)%60, remaining%60));
+        } else timerCountdown.setText("");
     }
     private void setWheelValues(int seconds) {
         savingWheels = true;
@@ -296,7 +362,8 @@ public class MainActivity extends Activity {
             savingWheels = false;
         }
         prefs.edit().putInt("timed_seconds", seconds).apply();
-        if (prefs.getBoolean("timed_disconnect", false)) SessionLogoutAlarm.update(this);
+        // Changing the wheels updates the selected duration, but never starts the timer.
+        renderTimerUi();
     }
 
     private void setStatusUi() {
@@ -344,8 +411,6 @@ public class MainActivity extends Activity {
         String source = prefs.getString("session_start_source", "");
         if (active && remaining >= 0 && "portal".equals(source)) {
             remainingLabel.setText((remaining / 60) + " min remaining (last reported)");
-        } else if (active) {
-            remainingLabel.setText("Minutes remaining · unavailable");
         } else {
             remainingLabel.setText("");
         }
@@ -497,6 +562,7 @@ public class MainActivity extends Activity {
     private final Runnable statusTicker = new Runnable() {
         @Override public void run() {
             setStatusUi();
+            renderTimerUi();
             if (!prefs.getBoolean("logout_in_progress", false)) maybeStartFreeWhatsApp();
             ui.postDelayed(this, 1300);
         }
