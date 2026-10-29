@@ -11,6 +11,7 @@ import android.content.res.ColorStateList;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -57,6 +58,7 @@ public class MainActivity extends Activity {
     private NumberPicker secondPicker;
     private boolean savingWheels = false;
     private boolean uiBusy = false;
+    private boolean manualLogoutRequested = false;
 
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -299,30 +301,48 @@ public class MainActivity extends Activity {
 
     private void setStatusUi() {
         if (wifiButton == null || statusLabel == null) return;
-        String current = prefs.getString("connection_status", "checking");
-        boolean active = "connected".equals(current) && prefs.getBoolean("session_active", false);
-        boolean checking = uiBusy || "checking".equals(current) ||
-                "logging_out".equals(current) || "unknown".equals(current);
-        wifiButton.setState(checking ? 1 : (active ? 2 : 0));
-        if ("logging_out".equals(current)) {
+        String current = prefs.getString("connection_status", "unknown");
+        boolean loggingOut = manualLogoutRequested
+                || prefs.getBoolean("logout_in_progress", false);
+        boolean active = "connected".equals(current)
+                && prefs.getBoolean("session_active", false);
+        // "Checking" is only a temporary on-screen network request, never a
+        // persistent status. In particular UNKNOWN must not spin forever.
+        boolean checking = uiBusy && !loggingOut;
+        wifiButton.setState((loggingOut || checking) ? 1 : (active ? 2 : 0));
+        if (loggingOut) {
             statusLabel.setText("Disconnecting…");
-            secondaryLabel.setText("Checking paid internet");
+            secondaryLabel.setText("Finishing paid internet logout");
         } else if (checking) {
-            statusLabel.setText("Checking…");
-            secondaryLabel.setText("Verifying ship Wi-Fi");
+            statusLabel.setText("Checking connection…");
+            secondaryLabel.setText("Please wait");
         } else if (active) {
             statusLabel.setText("Connected");
             secondaryLabel.setText("Tap to disconnect");
+        } else if ("restricted".equals(current)) {
+            statusLabel.setText("Disconnected");
+            String freeState = prefs.getString("free_portal_state", "");
+            if ("completed".equals(freeState)) {
+                // The completion page is observable; actual WhatsApp message
+                // delivery cannot be verified from inside this application.
+                secondaryLabel.setText("Free WhatsApp setup complete");
+            } else if (prefs.getBoolean("logout_pending_whatsapp", false)) {
+                secondaryLabel.setText("Free WhatsApp setup pending");
+            } else {
+                secondaryLabel.setText("Tap to connect");
+            }
+        } else if ("offline".equals(current)) {
+            statusLabel.setText("Disconnected");
+            secondaryLabel.setText("Connect to the ship's Wi-Fi");
         } else {
-            statusLabel.setText("Tap to connect");
-            secondaryLabel.setText("Paid internet offline");
+            statusLabel.setText("Connection unavailable");
+            secondaryLabel.setText("Tap Wi-Fi to retry");
         }
-        wifiButton.setContentDescription(checking ? "Checking connection" :
-                (active ? "Disconnect paid internet" : "Open onboard iCafe login in browser"));
+        wifiButton.setContentDescription((loggingOut || checking) ? "Connection update in progress" :
+                (active ? "Disconnect paid internet" : "Open onboard iCafe sign-in in browser"));
         int remaining = prefs.getInt("reported_remaining_seconds", -1);
         String source = prefs.getString("session_start_source", "");
         if (active && remaining >= 0 && "portal".equals(source)) {
-            // A portal-reported allowance, not the elapsed timer from first detection.
             remainingLabel.setText((remaining / 60) + " min remaining (last reported)");
         } else if (active) {
             remainingLabel.setText("Minutes remaining · unavailable");
@@ -332,6 +352,26 @@ public class MainActivity extends Activity {
     }
     private void onWifiClicked() {
         if (!busy.compareAndSet(false, true)) return;
+        // A known active session goes straight to the logout service. The
+        // service checks Wi-Fi itself; don't waste another check showing a
+        // prolonged "Checking" label before starting the requested action.
+        if ("connected".equals(prefs.getString("connection_status", ""))
+                && prefs.getBoolean("session_active", false)) {
+            busy.set(false);
+            manualLogoutRequested = true;
+            setStatusUi();
+            wifiButton.animate().scaleX(.96f).scaleY(.96f).setDuration(100)
+                    .withEndAction(() -> wifiButton.animate()
+                            .scaleX(1).scaleY(1).setDuration(130).start()).start();
+            startMonitor(MonitorService.ACTION_LOGOUT);
+            // The service's own logout_in_progress flag takes over shortly.
+            // The local feedback flag must never survive indefinitely.
+            ui.postDelayed(() -> {
+                manualLogoutRequested = false;
+                if (!isFinishing() && !isDestroyed()) setStatusUi();
+            }, 2500);
+            return;
+        }
         uiBusy = true;
         setStatusUi();
         wifiButton.animate().scaleX(.95f).scaleY(.95f).setDuration(105)
@@ -491,46 +531,67 @@ public class MainActivity extends Activity {
         super.onDestroy();
     }
 
-    /** Smaller tactile Wi-Fi button: thin icon, restrained bevel and short shadow. */
+    /** Subtly raised control with a crisp, geometrically balanced Wi-Fi glyph. */
     private final class WifiButton extends View {
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private int state; // 0=offline, 1=checking, 2=connected
+        private final Path glyph = new Path();
+        private int state; // 0=offline, 1=working, 2=connected
         WifiButton() { super(MainActivity.this); setLayerType(View.LAYER_TYPE_SOFTWARE, null); }
-        void setState(int next) { state = next; invalidate(); }
+        void setState(int next) {
+            if (state == next) return;
+            state = next;
+            invalidate();
+        }
         @Override protected void onDraw(Canvas canvas) {
-            float cx=getWidth()/2f, cy=getHeight()/2f;
-            float radius=Math.min(getWidth(),getHeight())*.42f;
+            super.onDraw(canvas);
+            float cx = getWidth() * .5f, cy = getHeight() * .5f;
+            float r = Math.min(getWidth(), getHeight()) * .415f;
+
+            // Quiet, tactile depth: a shallow shadow and one hairline rim.
+            p.reset(); p.setAntiAlias(true);
             p.setStyle(Paint.Style.FILL);
             p.setColor(BUTTON);
-            p.setShadowLayer(dp(8), 0, dp(5), Color.argb(105,0,0,0));
-            canvas.drawCircle(cx,cy,radius,p);
+            p.setShadowLayer(dp(5), 0, dp(3), Color.argb(66, 0, 0, 0));
+            canvas.drawCircle(cx, cy, r, p);
             p.clearShadowLayer();
             p.setStyle(Paint.Style.STROKE);
-            p.setStrokeWidth(dp(1.1f));
-            p.setColor(state==2 ? Color.rgb(219,223,226) : Color.rgb(71,75,79));
-            canvas.drawCircle(cx,cy,radius,p);
-            p.setStrokeWidth(dp(0.65f));
-            p.setColor(Color.rgb(98,102,106));
-            canvas.drawArc(new RectF(cx-radius+dp(3),cy-radius+dp(3),cx+radius-dp(3),cy+radius-dp(3)),
-                    212,110,false,p);
-            if (state==1) {
+            p.setStrokeWidth(dp(.9f));
+            p.setColor(state == 2 ? Color.rgb(211, 214, 217) : Color.rgb(77, 80, 84));
+            canvas.drawCircle(cx, cy, r, p);
+
+            // Single delicate highlight makes the surface read as a real button.
+            p.setStrokeWidth(dp(.65f));
+            p.setColor(Color.rgb(83, 87, 90));
+            canvas.drawArc(new RectF(cx-r+dp(3), cy-r+dp(3),
+                    cx+r-dp(3), cy+r-dp(3)), 208, 95, false, p);
+            if (state == 1) {
+                p.setStrokeWidth(dp(1.9f));
                 p.setColor(WHITE);
-                p.setStrokeWidth(dp(2.2f));
-                canvas.drawArc(new RectF(cx-radius-dp(1),cy-radius-dp(1),cx+radius+dp(1),cy+radius+dp(1)),
-                        270,100,false,p);
+                canvas.drawArc(new RectF(cx-r, cy-r, cx+r, cy+r), 265, 78, false, p);
             }
-            // Three thin arcs create a recognizable Wi-Fi symbol without filling the circle.
-            p.setColor(WHITE);
+
+            // Draw the Wi-Fi mark from three symmetric smooth curves, not
+            // elliptical arc segments. Consistent line width at every density.
+            p.setStyle(Paint.Style.STROKE);
             p.setStrokeCap(Paint.Cap.ROUND);
-            p.setStrokeWidth(dp(2.0f));
-            for (int i=0; i<3; i++) {
-                float w=radius*(0.52f-i*.15f);
-                float centerY=cy+dp(6);
-                canvas.drawArc(new RectF(cx-w,centerY-w*.45f,cx+w,centerY+w*.75f),
-                        218,104,false,p);
-            }
+            p.setStrokeJoin(Paint.Join.ROUND);
+            p.setStrokeWidth(dp(1.8f));
+            p.setColor(state == 2 ? WHITE : Color.rgb(222, 225, 228));
+            float scale = r / dp(55f);
+            canvas.save();
+            canvas.translate(cx, cy);
+            canvas.scale(scale, scale);
+            glyph.reset();
+            glyph.moveTo(-dp(25), -dp(8));
+            glyph.quadTo(0, -dp(29), dp(25), -dp(8));
+            glyph.moveTo(-dp(16), dp(1));
+            glyph.quadTo(0, -dp(13), dp(16), dp(1));
+            glyph.moveTo(-dp(7.5f), dp(10));
+            glyph.quadTo(0, dp(3.5f), dp(7.5f), dp(10));
+            canvas.drawPath(glyph, p);
             p.setStyle(Paint.Style.FILL);
-            canvas.drawCircle(cx,cy+radius*.28f,dp(1.7f),p);
+            canvas.drawCircle(0, dp(18), dp(2.2f), p);
+            canvas.restore();
         }
     }
 }

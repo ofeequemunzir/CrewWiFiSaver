@@ -158,6 +158,7 @@ public class MonitorService extends Service {
                 prefs().edit().putBoolean("session_active", true)
                         .putString("connection_status", "connected")
                         .putBoolean("logout_in_progress", true)
+                        .putString("free_portal_state", "pending")
                         .putLong("last_logout_attempt", System.currentTimeMillis()).apply();
                 report("logging_out", "Disconnecting paid internet…");
 

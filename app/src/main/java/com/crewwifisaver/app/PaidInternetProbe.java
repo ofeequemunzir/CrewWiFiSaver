@@ -113,7 +113,14 @@ public final class PaidInternetProbe {
             switch (result.state) {
                 case NO_WIFI: edit.putString("connection_status", "offline"); break;
                 case RESTRICTED: edit.putString("connection_status", "restricted"); break;
-                default: edit.putString("connection_status", "unknown"); break;
+                default:
+                    String prior = prefs.getString("connection_status", "unknown");
+                    // A failed probe is inconclusive, so do not erase the
+                    // last observed disconnected state. Still don't pretend
+                    // that a previously connected session is active.
+                    if (!"restricted".equals(prior) && !"offline".equals(prior))
+                        edit.putString("connection_status", "unknown");
+                    break;
             }
             // A previous portal session may no longer exist. Its remaining balance
             // must not appear as a live reading.

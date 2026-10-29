@@ -1,6 +1,8 @@
-# Crew Connect v2.7 Beta 1 — Minimal Home + Private Browser Login
+# Crew Connect v2.7 Beta 2 — Minimal Home + Logout Feedback
 
 An experimental Android application for users of a cruise-ship Wi-Fi captive portal.
+
+**Beta 2 update:** See [V2.7-BETA2-FIX-NOTES.md](V2.7-BETA2-FIX-NOTES.md) for the corrected Wi-Fi glyph and the logout-status changes.
 
 ## What's new
 
@@ -23,6 +25,6 @@ An experimental Android application for users of a cruise-ship Wi-Fi captive por
 
 ## Build
 
-Use the provided GitHub Actions workflow (`Actions` → `Build Android APK` → `Run workflow`) on a fresh branch, or compile with Gradle and Android SDK 35. The debug artifact is named `CrewConnect-v2.7-beta1-debug-apk`. Application ID remains `com.crewwifisaver.app` so it can update the installed app; app display name is `Crew Connect`.
+Use the provided GitHub Actions workflow (`Actions` → `Build Android APK` → `Run workflow`) on a fresh branch, or compile with Gradle and Android SDK 35. The debug artifact is named `CrewConnect-v2.7-beta2-status-icon-debug-apk`. Application ID remains `com.crewwifisaver.app` so it can update the installed app; app display name is `Crew Connect`.
 
 Do not install or distribute widely until the new flow has passed tests on the actual shipboard network. Preserve your previously working branch.
