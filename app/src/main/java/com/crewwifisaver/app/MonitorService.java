@@ -17,7 +17,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MonitorService extends Service {
     public static final String ACTION_LOGOUT = "com.crewwifisaver.app.LOGOUT";
@@ -29,7 +29,7 @@ public class MonitorService extends Service {
     private static final int ALERT_NOTIFICATION_ID = 13;
 
     private ScreenLockReceiver screenReceiver;
-    private volatile boolean logoutAttempted = false;
+    private final AtomicBoolean logoutAttempted = new AtomicBoolean(false);
 
     @Override public void onCreate() {
         super.onCreate();
@@ -109,16 +109,16 @@ public class MonitorService extends Service {
 
     private void alertAutomaticLogout(String message) {
         if (!prefs().getBoolean("notify_logout", true)) return;
-        // This confirms that the REQUEST finished, not that paid minutes stopped.
+        // Alerts describe observed network status; none claim backend entitlement proof.
         Intent open = new Intent(this, MainActivity.class);
         PendingIntent openIntent = PendingIntent.getActivity(this, 3, open,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         Notification alert = new Notification.Builder(this, ALERT_CHANNEL)
                 .setSmallIcon(R.drawable.ic_stat_wifi_logout)
                 .setContentTitle(
-                        message.startsWith("Logout request finished")
-                        ? "Logout Request Finished"
-                        : "Logout Status Unknown")
+                        message.startsWith("Internet appears disconnected")
+                        ? "Internet appears disconnected"
+                        : "Logout status needs checking")
                 .setContentIntent(openIntent)
                 .setContentText(message)
                 .setAutoCancel(true)
@@ -133,91 +133,124 @@ public class MonitorService extends Service {
     }
 
     /**
-     * Never interpret a plain HTTP 200 from the portal as free WhatsApp activation.
-     * The complimentary entitlement requires portal actions that must be tested first.
-     * The existing, working paid logout request is intentionally unchanged.
+     * Screen lock, elapsed timer and manual disconnect all use the same gate.
+     * A failed or blocked Google request is NOT evidence of paid logout; in
+     * that case do nothing and do not send a misleading success notification.
      */
     public void logout(boolean automatic) {
-        if (logoutAttempted) return;
-        logoutAttempted = true;
-        prefs().edit().putLong("last_logout_attempt", System.currentTimeMillis())
-                .putString("connection_status", "unknown").apply();
-        report("unknown", "Sending background logout request...");
-
+        if (!logoutAttempted.compareAndSet(false, true)) return;
         new Thread(() -> {
-            HttpURLConnection conn = null;
             try {
-                URL url = new URL("http://logout.com/");
-                conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("GET");
-                conn.setInstanceFollowRedirects(false);
-                conn.setConnectTimeout(10000);
-                conn.setReadTimeout(10000);
-                conn.setUseCaches(false);
+                PaidInternetProbe.Result before = PaidInternetProbe.checkWithRetry(this);
+                if (!before.hasFullInternet()) {
+                    // Silent when paid access is not confirmed. This prevents the
+                    // repeated screen-lock alerts experienced on free messaging.
+                    if (before.state == PaidInternetProbe.State.NO_WIFI)
+                        prefs().edit().putBoolean("session_active", false)
+                                .putString("connection_status", "offline").apply();
+                    else if (before.state == PaidInternetProbe.State.RESTRICTED)
+                        prefs().edit().putBoolean("session_active", false)
+                                .putString("connection_status", "restricted").apply();
+                    else
+                        prefs().edit().putString("connection_status", "unknown").apply();
+                    return;
+                }
+                prefs().edit().putBoolean("session_active", true)
+                        .putString("connection_status", "connected")
+                        .putBoolean("logout_in_progress", true)
+                        .putLong("last_logout_attempt", System.currentTimeMillis()).apply();
+                report("logging_out", "Disconnecting paid internet…");
 
-                int code = conn.getResponseCode();
-                URL currentUrl = url;
-                int redirects = 0;
-
-                while (code >= 300 && code < 400 && redirects < 10) {
-                    String location = conn.getHeaderField("Location");
-                    if (location == null) break;
-
-                    currentUrl = new URL(currentUrl, location);
-                    String protocol = currentUrl.getProtocol();
-                    if (!protocol.equals("http") && !protocol.equals("https")) {
-                        throw new IOException("Unsupported redirect");
-                    }
-
-                    conn.disconnect();
-                    conn = (HttpURLConnection) currentUrl.openConnection();
+                HttpURLConnection conn = null;
+                int code;
+                try {
+                    URL url = new URL("http://logout.com/");
+                    conn = PaidInternetProbe.openOnWifi(this, url);
                     conn.setRequestMethod("GET");
                     conn.setInstanceFollowRedirects(false);
                     conn.setConnectTimeout(10000);
                     conn.setReadTimeout(10000);
                     conn.setUseCaches(false);
-
                     code = conn.getResponseCode();
-                    redirects++;
+                    URL currentUrl = url;
+                    int redirects = 0;
+                    while (code >= 300 && code < 400 && redirects < 10) {
+                        String location = conn.getHeaderField("Location");
+                        if (location == null) break;
+                        currentUrl = new URL(currentUrl, location);
+                        if (!"http".equals(currentUrl.getProtocol()) &&
+                                !"https".equals(currentUrl.getProtocol()))
+                            throw new IOException("Unexpected redirect protocol");
+                        conn.disconnect();
+                        conn = PaidInternetProbe.openOnWifi(this, currentUrl);
+                        conn.setInstanceFollowRedirects(false);
+                        conn.setConnectTimeout(10000);
+                        conn.setReadTimeout(10000);
+                        conn.setUseCaches(false);
+                        code = conn.getResponseCode();
+                        redirects++;
+                    }
+                    try (InputStream input = conn.getInputStream()) {
+                        byte[] buffer = new byte[2048];
+                        while (input.read(buffer) != -1) {}
+                    } catch (IOException ignored) {
+                        // Logout may cut off the network while reading.
+                    }
+                    if (code < 200 || code >= 400)
+                        throw new IOException("Unexpected logout HTTP " + code);
+                } finally {
+                    if (conn != null) conn.disconnect();
                 }
 
-                try (InputStream input = conn.getInputStream()) {
-                    byte[] buffer = new byte[4096];
-                    while (input.read(buffer) != -1) {}
-                } catch (IOException ignored) {
-                    // The portal may disconnect the network during logout.
+                // The HTTP response alone says NOTHING about entitlement.
+                // Recheck general internet access over ship Wi-Fi after logout.
+                try { Thread.sleep(1400); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                PaidInternetProbe.Result firstAfter = PaidInternetProbe.checkWithRetry(this);
+                if (firstAfter.hasFullInternet()) {
+                    try { Thread.sleep(1800); }
+                    catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                    firstAfter = PaidInternetProbe.checkWithRetry(this);
                 }
-
-                if (code < 200 || code >= 400) {
-                    throw new IOException("Unexpected logout response HTTP " + code);
+                if (firstAfter.hasFullInternet()) {
+                    // Paid internet may still be running. Do not claim success or
+                    // start the complimentary plan while it is reachable.
+                    prefs().edit().putBoolean("session_active", true)
+                            .putString("connection_status", "connected")
+                            .putBoolean("logout_pending_whatsapp", false).apply();
+                    report("connected", "Internet remains reachable. Logout not verified.");
+                    return;
                 }
-                // The request completed; do NOT claim paid internet is verified offline.
+                if (firstAfter.state == PaidInternetProbe.State.NO_WIFI) {
+                    prefs().edit().putBoolean("session_active", false)
+                            .putString("connection_status", "offline")
+                            .putBoolean("logout_pending_whatsapp", false).apply();
+                    SessionLogoutAlarm.cancel(this);
+                    report("offline", "Wi-Fi disconnected. Free messaging requires ship Wi-Fi.");
+                    return;
+                }
+                // The observed change from 204 to non-204 strongly suggests logout.
+                // It still does NOT certify the backend's minute balance.
                 prefs().edit().putBoolean("session_active", false)
-                        .putString("connection_status", "logout_requested")
+                        .putString("connection_status", "restricted")
                         .putBoolean("logout_pending_whatsapp", prefs().getBoolean("auto_whatsapp", true))
                         .putString("free_portal_state", "pending")
+                        .putInt("reported_remaining_seconds", -1)
+                        .putString("session_start_source", "")
                         .apply();
                 SessionLogoutAlarm.cancel(this);
-                report("logout_requested", "Logout request finished (HTTP " + code + "). Verify paid session ended.");
-                if (prefs().getBoolean("auto_whatsapp", true)) {
-                    alertAutomaticLogout("Logout request finished. Open Crew Connect to activate Free WhatsApp Text.");
-                } else if (automatic) {
-                    alertAutomaticLogout("Logout request finished. Verify paid internet is disconnected.");
-                }
+                report("restricted", "Internet appears disconnected after logout request.");
+                if (automatic) alertAutomaticLogout("Internet appears disconnected. Open Crew Connect for Free WhatsApp Text.");
             } catch (Exception e) {
-                report("unknown", "Logout request failed: " + e.getMessage());
-                if (automatic) {
-                    alertAutomaticLogout("Logout could not be confirmed. Check your Crew Wi-Fi connection.");
-                }
+                report("unknown", "Logout could not be verified. Please check your connection.");
+                Log.w("CrewConnect", "Logout request was not verified", e);
             } finally {
-                if (conn != null) conn.disconnect();
-                logoutAttempted = false;
-                // If automatic logout is disabled, the service was started
-                // for a one-time manual request; don't leave it monitoring.
+                prefs().edit().putBoolean("logout_in_progress", false).apply();
+                logoutAttempted.set(false);
                 if (!prefs().getBoolean("screen_lock", true) &&
                         !prefs().getBoolean("timed_disconnect", false)) stopSelf();
             }
-        }, "WifiLogoutRequest").start();
+        }, "CrewPaidLogout").start();
     }
 
     @Override public void onDestroy() {

@@ -34,6 +34,7 @@ import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Compact three-tab Android UI. Uses the existing app ID so it installs as an update. */
 public class MainActivity extends Activity {
@@ -58,17 +59,24 @@ public class MainActivity extends Activity {
     };
     private LinearLayout content;
     private LinearLayout nav;
+    private TextView elapsedLabelView;
     private TextView elapsedView;
     private TextView remainingView;
     private TextView statusView;
     private TextView statusDetailView;
     private TextView packageView;
     private WifiCircle wifiCircle;
+    private boolean homeRenderedConnected = false;
     private String selectedTab = "home";
     private String accountUsername = "";
     private String accountPin = ""; // Never saved in preferences or written to logs.
+    private String accountError = "";
+    private TextView accountErrorView;
+    private EditText accountUserField;
+    private EditText accountPinField;
     private boolean portalOpening = false;
     private boolean promptShown = false;
+    private final AtomicBoolean connectionCheckRunning = new AtomicBoolean(false);
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -202,8 +210,11 @@ public class MainActivity extends Activity {
     private void showTab(String tab) {
         selectedTab = tab;
         content.removeAllViews();
-        elapsedView = null; remainingView = null; statusView = null;
+        elapsedLabelView = null; elapsedView = null; remainingView = null; statusView = null;
         statusDetailView = null; packageView = null; wifiCircle = null;
+        accountErrorView = null;
+        accountUserField = null;
+        accountPinField = null;
         buildNav();
         if ("home".equals(tab)) buildHome();
         else if ("automation".equals(tab)) buildAutomation();
@@ -216,6 +227,7 @@ public class MainActivity extends Activity {
                 "connected".equals(prefs.getString("connection_status", "unknown"));
     }
     private void buildHome() {
+        homeRenderedConnected = connected();
         // Hero: preserve the approved placement, keeping whitespace around the Wi-Fi ring.
         LinearLayout hero = column();
         hero.setGravity(Gravity.CENTER_HORIZONTAL);
@@ -245,7 +257,8 @@ public class MainActivity extends Activity {
 
         LinearLayout metrics = row();
         LinearLayout left = column();
-        left.addView(text("Session elapsed", 11, MUTED, false)); space(left, 7);
+        elapsedLabelView = text("Session elapsed", 11, MUTED, false);
+        left.addView(elapsedLabelView); space(left, 7);
         elapsedView = text("00:00:00", 20, WHITE, true);
         left.addView(elapsedView);
         metrics.addView(left, new LinearLayout.LayoutParams(0, -2, 1f));
@@ -415,6 +428,18 @@ public class MainActivity extends Activity {
         input.setImeOptions(secret ? EditorInfo.IME_ACTION_DONE : EditorInfo.IME_ACTION_NEXT);
         return input;
     }
+    private GradientDrawable errorOutlined(int color, int radius) {
+        GradientDrawable gd = rounded(color, radius);
+        gd.setStroke(dp(1), Color.rgb(229, 104, 110));
+        return gd;
+    }
+    private void clearAccountError() {
+        if (accountError.isEmpty()) return;
+        accountError = "";
+        if (accountErrorView != null) accountErrorView.setVisibility(View.GONE);
+        if (accountUserField != null) accountUserField.setBackground(outlined(INNER, 10));
+        if (accountPinField != null) accountPinField.setBackground(outlined(INNER, 10));
+    }
     private void buildAccount() {
         space(content, 13);
         content.addView(text("Internet Account", 21, WHITE, true));
@@ -427,8 +452,13 @@ public class MainActivity extends Activity {
         userCol.addView(text("Username", 11, MUTED, false)); space(userCol, 9);
         EditText user = field("Username", false);
         user.setText(accountUsername);
+        accountUserField = user;
+        if (!accountError.isEmpty()) user.setBackground(errorOutlined(INNER, 10));
         user.addTextChangedListener(new ShortTextWatcher() {
-            @Override public void afterTextChanged(Editable e) { accountUsername = e.toString(); }
+            @Override public void afterTextChanged(Editable e) {
+                accountUsername = e.toString();
+                clearAccountError();
+            }
         });
         userCol.addView(user, new LinearLayout.LayoutParams(-1, dp(44)));
         fields.addView(userCol, new LinearLayout.LayoutParams(0, -2, 1f));
@@ -436,12 +466,23 @@ public class MainActivity extends Activity {
         pinCol.addView(text("PIN", 11, MUTED, false)); space(pinCol, 9);
         EditText pin = field("PIN", true);
         pin.setText(accountPin);
+        accountPinField = pin;
+        if (!accountError.isEmpty()) pin.setBackground(errorOutlined(INNER, 10));
         pin.addTextChangedListener(new ShortTextWatcher() {
-            @Override public void afterTextChanged(Editable e) { accountPin = e.toString(); }
+            @Override public void afterTextChanged(Editable e) {
+                accountPin = e.toString();
+                clearAccountError();
+            }
         });
         pinCol.addView(pin, new LinearLayout.LayoutParams(-1, dp(44)));
         fields.addView(pinCol, new LinearLayout.LayoutParams(0, -2, 1f));
         card.addView(fields);
+        if (!accountError.isEmpty()) {
+            space(card, 10);
+            accountErrorView = text(accountError, 12, Color.rgb(255, 145, 148), false);
+            accountErrorView.setContentDescription("Sign-in error: " + accountError);
+            card.addView(accountErrorView);
+        }
         space(card, 20);
         Button sign = button("Sign In to Internet", WHITE, BG, 49);
         sign.setOnClickListener(v -> {
@@ -450,6 +491,7 @@ public class MainActivity extends Activity {
                         .setPositiveButton("OK", null).show();
                 return;
             }
+            clearAccountError();
             Intent i = new Intent(this, PortalLoginActivity.class);
             i.putExtra(PortalLoginActivity.EXTRA_USER, accountUsername.trim());
             i.putExtra(PortalLoginActivity.EXTRA_PIN, accountPin);
@@ -491,8 +533,16 @@ public class MainActivity extends Activity {
     private void updateSessionText() {
         if (statusView == null) return;
         boolean active = connected();
+        if (homeRenderedConnected != active) {
+            showTab("home");
+            return;
+        }
         String state = prefs.getString("connection_status", "offline");
         wifiCircle.setConnected(active);
+        if (elapsedLabelView != null) {
+            boolean detected = "detected".equals(prefs.getString("session_start_source", ""));
+            elapsedLabelView.setText(active && detected ? "Since detected" : "Session elapsed");
+        }
         if (active) {
             statusView.setText("INTERNET ACTIVE");
             String svc = prefs.getString("active_package", "");
@@ -504,10 +554,16 @@ public class MainActivity extends Activity {
             int balance = prefs.getInt("reported_remaining_seconds", -1);
             remainingView.setText(balance < 0 ? "—" : formatDuration(Math.max(0, balance - (int)spent)));
         } else {
-            boolean requested = "logout_requested".equals(state) || "unknown".equals(state);
-            statusView.setText(requested ? "LOGOUT REQUESTED" : "INTERNET OFFLINE");
-            statusDetailView.setText(requested ? "Paid session status not yet confirmed" :
-                    "No paid session tracked in this app");
+            if ("unknown".equals(state) || "checking".equals(state)) {
+                statusView.setText("CHECKING CONNECTION");
+                statusDetailView.setText("Paid internet status could not be verified");
+            } else if ("logging_out".equals(state)) {
+                statusView.setText("DISCONNECTING");
+                statusDetailView.setText("Checking paid internet logout…");
+            } else {
+                statusView.setText("INTERNET OFFLINE");
+                statusDetailView.setText("Paid internet not detected");
+            }
             elapsedView.setText("00:00:00");
             remainingView.setText("—");
         }
@@ -569,11 +625,44 @@ public class MainActivity extends Activity {
     }
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == 260 && resultCode == RESULT_OK) {
+        if (requestCode == 260) {
             accountPin = "";
-            showTab("home");
+            if (resultCode == RESULT_OK) {
+                accountError = "";
+                showTab("home");
+            } else if (data != null && data.hasExtra(PortalLoginActivity.EXTRA_LOGIN_ERROR)) {
+                String code = data.getStringExtra(PortalLoginActivity.EXTRA_LOGIN_ERROR);
+                if (PortalLoginActivity.ERROR_INVALID_PIN.equals(code)) {
+                    accountError = "Invalid PIN entered. Please check your details and try again.";
+                } else if (PortalLoginActivity.ERROR_INVALID_USERNAME.equals(code)) {
+                    accountError = "Username not recognized. Please check it and try again.";
+                } else {
+                    accountError = "Incorrect username or PIN. Please try again.";
+                }
+                // Keep the username for correction, but never retain the PIN.
+                showTab("account");
+            }
         }
     }
+    private void refreshPaidConnection() {
+        if (!connectionCheckRunning.compareAndSet(false, true)) return;
+        if (!prefs.getBoolean("logout_in_progress", false) && !connected()) {
+            prefs.edit().putString("connection_status", "checking").apply();
+        }
+        new Thread(() -> {
+            try {
+                PaidInternetProbe.Result result = PaidInternetProbe.checkWithRetry(this);
+                PaidInternetProbe.updateOnAppOpen(this, result);
+                handler.post(() -> {
+                    if (!isFinishing() && content != null && "home".equals(selectedTab))
+                        showTab("home");
+                });
+            } finally {
+                connectionCheckRunning.set(false);
+            }
+        }, "CrewWiFiStatusCheck").start();
+    }
+
     @Override protected void onResume() {
         super.onResume();
         portalOpening = false;
@@ -582,6 +671,7 @@ public class MainActivity extends Activity {
         if (content != null) showTab(selectedTab);
         handler.removeCallbacks(refresh);
         handler.postDelayed(refresh, 300);
+        refreshPaidConnection();
     }
     @Override protected void onPause() {
         handler.removeCallbacks(refresh);
