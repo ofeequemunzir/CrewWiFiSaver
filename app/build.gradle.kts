@@ -6,7 +6,7 @@ android {
         applicationId = "com.crewwifisaver.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 5
-        versionName = "2.5-activation-test"
+        versionCode = 6
+        versionName = "2.6-beta1"
     }
 }

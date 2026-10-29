@@ -9,7 +9,7 @@
         <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
 
     <application
-        android:label="login.com"
+        android:label="Crew Connect"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@android:style/Theme.Material.NoActionBar"
@@ -25,6 +25,10 @@
         </activity>
 
         <activity
+            android:name=".PortalLoginActivity"
+            android:exported="false"/>
+
+        <activity
             android:name=".FreeWhatsAppTestActivity"
             android:exported="false"/>
 
@@ -37,6 +41,7 @@
                 android:value="User-enabled crew Wi-Fi session monitoring"/>
         </service>
 
-            <receiver android:name=".LogoutAlarmReceiver" android:exported="false"/>
+        <receiver android:name=".LogoutAlarmReceiver" android:exported="false"/>
+        <receiver android:name=".SessionLogoutReceiver" android:exported="false"/>
     </application>
 </manifest>

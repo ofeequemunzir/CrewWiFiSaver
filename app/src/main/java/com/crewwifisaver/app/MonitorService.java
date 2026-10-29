@@ -35,16 +35,16 @@ public class MonitorService extends Service {
         super.onCreate();
         NotificationManager notifications = getSystemService(NotificationManager.class);
         NotificationChannel monitor = new NotificationChannel(
-                MONITOR_CHANNEL, "login.com monitoring", NotificationManager.IMPORTANCE_LOW);
+                MONITOR_CHANNEL, "Crew Connect monitoring", NotificationManager.IMPORTANCE_LOW);
         notifications.createNotificationChannel(monitor);
         NotificationChannel alerts = new NotificationChannel(
-                ALERT_CHANNEL, "Wi-Fi logout alerts", NotificationManager.IMPORTANCE_HIGH);
+                ALERT_CHANNEL, "Crew Connect alerts", NotificationManager.IMPORTANCE_HIGH);
         alerts.setDescription("Notifications when automatic logout requests finish");
         alerts.enableVibration(true);
         alerts.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
         notifications.createNotificationChannel(alerts);
 
-        startForeground(MONITOR_NOTIFICATION_ID, monitorNotification("Screen-off monitoring ready"));
+        startForeground(MONITOR_NOTIFICATION_ID, monitorNotification("Disconnect protection ready"));
         setupScreenMonitoring();
     }
 
@@ -55,26 +55,12 @@ public class MonitorService extends Service {
     private void setupScreenMonitoring() {
         screenReceiver = new ScreenLockReceiver(new ScreenLockReceiver.Listener() {
             @Override public void onScreenOff() {
-                if (!prefs().getBoolean("auto", true)) {
-                    LogoutAlarm.cancel(MonitorService.this);
-                    return;
-                }
-                if (prefs().getBoolean("instant", false)) {
-                    LogoutAlarm.cancel(MonitorService.this);
+                if (prefs().getBoolean("screen_lock", true)) {
+                    // This is immediate screen-lock logout, NOT the independent session timer.
                     logout(true);
-                } else {
-                    int seconds = Math.max(10, prefs().getInt("lock_seconds", 30));
-                    LogoutAlarm.schedule(MonitorService.this, seconds);
-                    report("monitoring", "Screen off - logout timer started (" + seconds + " seconds)");
                 }
             }
-
-            @Override public void onScreenOn() {
-                LogoutAlarm.cancel(MonitorService.this);
-                if (!logoutAttempted) {
-                    report("monitoring", "Screen on - logout timer cancelled");
-                }
-            }
+            @Override public void onScreenOn() { /* No screen-based timer to cancel. */ }
         });
         IntentFilter filter = new IntentFilter();
         filter.addAction(Intent.ACTION_SCREEN_OFF);
@@ -90,7 +76,8 @@ public class MonitorService extends Service {
         }
         if (ACTION_LOGOUT.equals(action)) {
             logout(false);
-        } else if (ACTION_AUTO_LOGOUT.equals(action) && prefs().getBoolean("auto", true)) {
+        } else if (ACTION_AUTO_LOGOUT.equals(action) &&
+                (prefs().getBoolean("screen_lock", true) || prefs().getBoolean("timed_disconnect", false))) {
             logout(true);
         }
         return START_STICKY;
@@ -105,11 +92,11 @@ public class MonitorService extends Service {
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         return new Notification.Builder(this, MONITOR_CHANNEL)
                 .setSmallIcon(R.drawable.ic_stat_wifi_logout)
-                .setContentTitle("login.com")
+                .setContentTitle("Crew Connect")
                 .setContentText(detail)
                 .setContentIntent(openIntent)
                 .addAction(android.R.drawable.ic_menu_close_clear_cancel,
-                        "Log out now", logoutIntent)
+                        "Instant disconnect", logoutIntent)
                 .setOngoing(true)
                 .build();
     }
@@ -130,9 +117,10 @@ public class MonitorService extends Service {
                 .setSmallIcon(R.drawable.ic_stat_wifi_logout)
                 .setContentTitle(
                         message.startsWith("Logout request finished")
-                        ? "Logout Request Completed"
+                        ? "Logout Request Finished"
                         : "Logout Status Unknown")
                 .setContentIntent(openIntent)
+                .setContentText(message)
                 .setAutoCancel(true)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setCategory(Notification.CATEGORY_STATUS)
@@ -140,7 +128,7 @@ public class MonitorService extends Service {
         try {
             getSystemService(NotificationManager.class).notify(ALERT_NOTIFICATION_ID, alert);
         } catch (SecurityException e) {
-            Log.w("login.com", "Notification permission is unavailable", e);
+            Log.w("Crew Connect", "Notification permission is unavailable", e);
         }
     }
 
@@ -152,7 +140,8 @@ public class MonitorService extends Service {
     public void logout(boolean automatic) {
         if (logoutAttempted) return;
         logoutAttempted = true;
-        prefs().edit().putLong("last_logout_attempt", System.currentTimeMillis()).apply();
+        prefs().edit().putLong("last_logout_attempt", System.currentTimeMillis())
+                .putString("connection_status", "unknown").apply();
         report("unknown", "Sending background logout request...");
 
         new Thread(() -> {
@@ -199,9 +188,21 @@ public class MonitorService extends Service {
                     // The portal may disconnect the network during logout.
                 }
 
-                report("unknown", "Logout HTTP " + code + " - verify paid session ended");
-                if (automatic) {
-                    alertAutomaticLogout("Logout request finished. Check that your Crew Wi-Fi is disconnected.");
+                if (code < 200 || code >= 400) {
+                    throw new IOException("Unexpected logout response HTTP " + code);
+                }
+                // The request completed; do NOT claim paid internet is verified offline.
+                prefs().edit().putBoolean("session_active", false)
+                        .putString("connection_status", "logout_requested")
+                        .putBoolean("logout_pending_whatsapp", prefs().getBoolean("auto_whatsapp", true))
+                        .putString("free_portal_state", "pending")
+                        .apply();
+                SessionLogoutAlarm.cancel(this);
+                report("logout_requested", "Logout request finished (HTTP " + code + "). Verify paid session ended.");
+                if (prefs().getBoolean("auto_whatsapp", true)) {
+                    alertAutomaticLogout("Logout request finished. Open Crew Connect to activate Free WhatsApp Text.");
+                } else if (automatic) {
+                    alertAutomaticLogout("Logout request finished. Verify paid internet is disconnected.");
                 }
             } catch (Exception e) {
                 report("unknown", "Logout request failed: " + e.getMessage());
@@ -213,13 +214,13 @@ public class MonitorService extends Service {
                 logoutAttempted = false;
                 // If automatic logout is disabled, the service was started
                 // for a one-time manual request; don't leave it monitoring.
-                if (!prefs().getBoolean("auto", true)) stopSelf();
+                if (!prefs().getBoolean("screen_lock", true) &&
+                        !prefs().getBoolean("timed_disconnect", false)) stopSelf();
             }
         }, "WifiLogoutRequest").start();
     }
 
     @Override public void onDestroy() {
-        LogoutAlarm.cancel(this);
         if (screenReceiver != null) unregisterReceiver(screenReceiver);
         super.onDestroy();
     }

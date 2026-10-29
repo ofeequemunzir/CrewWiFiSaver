@@ -26,6 +26,8 @@ import org.json.JSONArray;
  * uses a separate WebView cookie jar, which may differ from the user's browser.
  */
 public class FreeWhatsAppTestActivity extends Activity {
+    public static final String EXTRA_AUTOSTART = "auto_start";
+    public static final String EXTRA_RETURN_ON_COMPLETE = "return_on_complete";
     private static final String PORTAL = "https://onboardicafe.com/";
     private static final int DARK = Color.rgb(10, 12, 15);
     private static final int CARD = Color.rgb(26, 30, 35);
@@ -38,6 +40,7 @@ public class FreeWhatsAppTestActivity extends Activity {
     private TextView status;
     private Button autoButton;
     private boolean autoMode = false;
+    private boolean returnWhenDone = false;
     private boolean reachedConfirmation = false;
     private boolean evaluating = false;
     private int step = 1;
@@ -86,7 +89,7 @@ public class FreeWhatsAppTestActivity extends Activity {
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setPadding(dp(14), dp(12), dp(14), dp(10));
         panel.setBackgroundColor(CARD);
-        TextView title = text("Free WhatsApp · Activation Test", 17, WHITE);
+        TextView title = text("Free WhatsApp Text", 17, WHITE);
         title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         panel.addView(title);
         status = text("Log out of paid internet first. Then tap Try Automatic Steps.", 12, MUTED);
@@ -166,6 +169,14 @@ public class FreeWhatsAppTestActivity extends Activity {
             status.setText("Manual mode. Use the portal buttons yourself.\nThe test will watch for the final page.");
         });
 
+        returnWhenDone = getIntent().getBooleanExtra(EXTRA_RETURN_ON_COMPLETE, false);
+        if (getIntent().getBooleanExtra(EXTRA_AUTOSTART, false)) {
+            autoMode = true;
+            step = 1;
+            startedAt = android.os.SystemClock.elapsedRealtime();
+            autoButton.setText("Automatic Steps Running…");
+            status.setText("Activating free WhatsApp text through the official portal…");
+        }
         browser.loadUrl(PORTAL);
         handler.postDelayed(this::pollLoop, 1400);
     }
@@ -223,7 +234,12 @@ public class FreeWhatsAppTestActivity extends Activity {
                 autoMode = false;
                 autoButton.setText("Portal Page Completed");
                 autoButton.setEnabled(false);
-                status.setText("Final portal screen reached. Try a WhatsApp text to confirm free access; paid logout is not independently verified.");
+                status.setText("Portal steps completed. Verify WhatsApp by sending a text; paid logout is not independently verified.");
+                getSharedPreferences("prefs", MODE_PRIVATE).edit()
+                        .putString("free_portal_state", "completed")
+                        .putLong("free_portal_completed_at", System.currentTimeMillis())
+                        .apply();
+                if (returnWhenDone) handler.postDelayed(this::finish, 850);
                 return;
             }
             if (!autoMode) {
