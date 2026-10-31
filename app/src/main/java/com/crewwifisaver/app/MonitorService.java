@@ -74,7 +74,9 @@ public class MonitorService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        if (ACTION_LOGOUT.equals(action)) {
+        if ("com.crewwifisaver.app.DAILY_LIMIT_LOGOUT".equals(action)) {
+            logout(true);
+        } else if (ACTION_LOGOUT.equals(action)) {
             logout(false);
         } else if (ACTION_AUTO_LOGOUT.equals(action) &&
                 (prefs().getBoolean("screen_lock", true) || prefs().getBoolean("timed_disconnect", false))) {
@@ -219,6 +221,7 @@ public class MonitorService extends Service {
                     prefs().edit().putBoolean("session_active", true)
                             .putString("connection_status", "connected")
                             .putBoolean("logout_pending_whatsapp", false).apply();
+                    DailyUsageTracker.update(this, true);
                     report("connected", "Internet remains reachable. Logout not verified.");
                     return;
                 }
@@ -239,6 +242,7 @@ public class MonitorService extends Service {
                         .putInt("reported_remaining_seconds", -1)
                         .putString("session_start_source", "")
                         .apply();
+                DailyUsageTracker.update(this, false);
                 SessionLogoutAlarm.cancel(this);
                 report("restricted", "Internet appears disconnected after logout request.");
                 if (automatic) alertAutomaticLogout("Internet appears disconnected. Open Crew Connect for Free WhatsApp Text.");

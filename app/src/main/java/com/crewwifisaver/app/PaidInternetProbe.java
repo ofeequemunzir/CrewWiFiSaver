@@ -94,6 +94,7 @@ public final class PaidInternetProbe {
         boolean previouslyVerified = prefs.getBoolean("session_active", false)
                 && "connected".equals(prefs.getString("connection_status", ""));
         SharedPreferences.Editor edit = prefs.edit();
+        DailyUsageTracker.update(context, result.hasFullInternet());
         if (result.hasFullInternet()) {
             edit.putBoolean("session_active", true)
                 .putString("connection_status", "connected");

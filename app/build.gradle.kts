@@ -1,7 +1,7 @@
 plugins { id("com.android.application") }
 android {
     namespace = "com.crewwifisaver.app"
-    compileSdk = 35
+    compileSdk = 34
     defaultConfig {
         applicationId = "com.crewwifisaver.app"
         minSdk = 29

@@ -476,8 +476,7 @@ public class MainActivity extends Activity {
         }
     }
     private void updateMonitor() {
-        boolean keepRunning = prefs.getBoolean("screen_lock", true) ||
-                prefs.getBoolean("timed_disconnect", false);
+        boolean keepRunning = true; // Daily usage monitoring
         Intent intent = new Intent(this, MonitorService.class);
         if (keepRunning) {
             try { startForegroundService(intent); }
